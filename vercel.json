@@ -1,0 +1,10 @@
+{
+  "framework": "nextjs",
+  "ignoreCommand": "exit 0",
+  "git": {
+    "deploymentEnabled": {
+      "main": true,
+      "master": true
+    }
+  }
+}

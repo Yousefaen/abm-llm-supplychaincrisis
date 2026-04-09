@@ -1,0 +1,14 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "watchPatterns": ["backend/**"]
+  },
+  "deploy": {
+    "runtime": "V2",
+    "startCommand": "cd backend && uvicorn server:app --host 0.0.0.0 --port $PORT",
+    "healthcheckPath": "/api/state",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
