@@ -67,15 +67,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Supply Chain ABM Simulator", lifespan=lifespan)
 
-# In production, set CORS_ORIGINS to the Vercel frontend URL.
-# e.g. "https://my-app.vercel.app"  — comma-separated for multiple.
-_cors_origins = os.environ.get("CORS_ORIGINS", "*")
-_origins_list = [o.strip() for o in _cors_origins.split(",")] if _cors_origins != "*" else ["*"]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins_list,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
