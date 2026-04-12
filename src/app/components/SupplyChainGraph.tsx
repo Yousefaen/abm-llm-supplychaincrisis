@@ -178,7 +178,35 @@ export default function SupplyChainGraph({
       .attr("dy", 40)
       .attr("fill", "currentColor")
       .attr("font-size", "11px")
-      .attr("font-weight", "500");
+      .attr("font-weight", "500")
+      .attr("class", "node-name");
+
+    // Emotion label (below name)
+    node
+      .append("text")
+      .attr("text-anchor", "middle")
+      .attr("dy", 52)
+      .attr("fill", "#888")
+      .attr("font-size", "9px")
+      .attr("class", "node-emotion");
+
+    // Signal indicator pips (small circles offset from main node)
+    node
+      .append("circle")
+      .attr("r", 0)
+      .attr("cx", 20)
+      .attr("cy", -20)
+      .attr("class", "node-signal-pip")
+      .attr("stroke", "none");
+
+    // Reflection indicator (small dot on the other side)
+    node
+      .append("circle")
+      .attr("r", 0)
+      .attr("cx", -20)
+      .attr("cy", -20)
+      .attr("fill", "#a855f7")
+      .attr("class", "node-reflection-pip");
 
     // Tier labels
     const tierLabels = [
@@ -293,12 +321,22 @@ export default function SupplyChainGraph({
         .attr("stroke-opacity", 0.6);
     });
 
+    // Signal type -> color mapping
+    const sigColors: Record<string, string> = {
+      price_warning: "#f97316",
+      loyalty_pledge: "#22c55e",
+      threat: "#ef4444",
+      information: "#3b82f6",
+      request: "#eab308",
+    };
+
     // Update node appearance
     svg
       .selectAll<SVGGElement, GraphNode>(".nodes g")
       .each(function (d) {
         const agent = agents[d.id];
-        const circle = d3.select(this).select<SVGCircleElement>(".node-circle");
+        const el = d3.select(this);
+        const circle = el.select<SVGCircleElement>(".node-circle");
 
         if (!agent) return;
 
@@ -335,6 +373,27 @@ export default function SupplyChainGraph({
         } else {
           circle.attr("stroke-dasharray", null);
         }
+
+        // Emotion label under name
+        el.select(".node-emotion")
+          .text(agent.emotional_state)
+          .attr("fill", emotionColor);
+
+        // Signal pip — show the strongest signal type sent this round
+        const signals = agent.signals_sent ?? [];
+        if (signals.length > 0) {
+          const primaryType = signals[0].signal_type ?? "information";
+          el.select(".node-signal-pip")
+            .attr("r", 5)
+            .attr("fill", sigColors[primaryType] ?? "#888");
+        } else {
+          el.select(".node-signal-pip").attr("r", 0);
+        }
+
+        // Reflection pip — show if agent has reflections
+        const hasReflections = agent.reflections && agent.reflections.length > 0;
+        el.select(".node-reflection-pip")
+          .attr("r", hasReflections ? 4 : 0);
       });
   }, [agents, selectedAgent, thinkingAgent]);
 

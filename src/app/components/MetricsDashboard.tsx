@@ -16,6 +16,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import { Badge } from "@/components/ui/badge";
 import type { AgentState, EmotionalState, HistoryRound, Tier } from "../lib/types";
 import {
   AGENT_IDS,
@@ -194,6 +195,9 @@ export default function MetricsDashboard({ history, agents }: Props) {
         <TabsTrigger value="scorecard" className="text-xs">
           Scorecard
         </TabsTrigger>
+        <TabsTrigger value="minds" className="text-xs">
+          Minds
+        </TabsTrigger>
       </TabsList>
 
       {/* Fill Rate */}
@@ -303,6 +307,11 @@ export default function MetricsDashboard({ history, agents }: Props) {
       {/* Financial Scorecard */}
       <TabsContent value="scorecard" className="flex-1 p-3 pt-1 overflow-auto">
         <FinancialScorecard data={scorecardData} />
+      </TabsContent>
+
+      {/* Agent Minds */}
+      <TabsContent value="minds" className="flex-1 p-3 pt-1 overflow-auto">
+        <AgentMinds agents={agents} />
       </TabsContent>
     </Tabs>
   );
@@ -506,6 +515,82 @@ function FinancialScorecard({
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// --- Agent Minds sub-component ---
+function AgentMinds({ agents }: { agents: Record<string, AgentState> }) {
+  const agentList = AGENT_IDS.filter((id) => agents[id]);
+
+  if (agentList.length === 0) {
+    return <div className="text-xs text-muted-foreground">No data</div>;
+  }
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+      {agentList.map((id) => {
+        const agent = agents[id];
+        const reflections = agent.reflections ?? [];
+        const plan = agent.current_plan;
+        const hasContent = reflections.length > 0 || plan;
+
+        return (
+          <div
+            key={id}
+            className="rounded-md border border-border/50 bg-muted/20 p-2 space-y-1.5"
+          >
+            {/* Header */}
+            <div className="flex items-center gap-1.5">
+              <div
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{
+                  backgroundColor: TIER_COLORS[agent.tier] ?? "#888",
+                }}
+              />
+              <span className="text-xs font-semibold truncate">{id}</span>
+              <Badge
+                variant="outline"
+                className="ml-auto text-[9px] px-1 py-0 shrink-0"
+                style={{
+                  borderColor:
+                    EMOTIONAL_COLORS[agent.emotional_state] ?? "#888",
+                  color: EMOTIONAL_COLORS[agent.emotional_state] ?? "#888",
+                }}
+              >
+                {agent.emotional_state}
+              </Badge>
+            </div>
+
+            {/* Plan summary (one line) */}
+            {plan && (
+              <div className="text-[10px] text-emerald-400/80 truncate">
+                {plan.invalidated ? "Plan invalidated" : plan.goals[0] ?? ""}
+              </div>
+            )}
+
+            {/* Reflections */}
+            {reflections.length > 0 ? (
+              <div className="space-y-1">
+                {reflections.slice(0, 3).map((r, i) => (
+                  <p
+                    key={i}
+                    className="text-[10px] text-muted-foreground italic leading-snug"
+                  >
+                    {r.length > 120 ? r.slice(0, 120) + "..." : r}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              !hasContent && (
+                <p className="text-[10px] text-muted-foreground/50">
+                  No reflections yet
+                </p>
+              )
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

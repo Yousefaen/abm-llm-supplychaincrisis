@@ -65,13 +65,17 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Bottom: Metrics + Event Log */}
-      <div className="shrink-0 grid grid-cols-1 lg:grid-cols-3 gap-3 px-3 pb-3 max-h-[40vh]">
-        <div className="lg:col-span-2 rounded-lg border border-border bg-card overflow-auto">
+      {/* Bottom: Metrics + Activity Feed */}
+      <div className="shrink-0 grid grid-cols-1 lg:grid-cols-2 gap-3 px-3 pb-3 max-h-[45vh]">
+        <div className="rounded-lg border border-border bg-card overflow-auto">
           <MetricsDashboard history={state.history} agents={state.agents} />
         </div>
         <div className="rounded-lg border border-border bg-card overflow-hidden">
-          <EventLog history={state.history} />
+          <EventLog
+            history={state.history}
+            agents={state.agents}
+            currentRound={state.currentRound}
+          />
         </div>
       </div>
     </main>

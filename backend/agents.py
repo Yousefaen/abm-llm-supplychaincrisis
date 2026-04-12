@@ -11,6 +11,14 @@ import anthropic
 from mesa import Agent
 
 from debug_session import dbg_log
+from memory import (
+    PLANNING_HORIZONS,
+    AgentSignal,
+    MemoryStream,
+    StrategicPlan,
+    generate_decision_memory,
+    generate_partner_behavior_memory,
+)
 
 if TYPE_CHECKING:
     from model import SupplyChainModel
@@ -39,30 +47,51 @@ _client = anthropic.Anthropic()
 
 HAIKU_INPUT_COST_PER_M = 0.80   # $/1M input tokens
 HAIKU_OUTPUT_COST_PER_M = 4.00  # $/1M output tokens
+SONNET_INPUT_COST_PER_M = 3.00  # $/1M input tokens
+SONNET_OUTPUT_COST_PER_M = 15.00  # $/1M output tokens
+
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+MODEL_SONNET = "claude-sonnet-4-20250514"
 
 # ---------------------------------------------------------------------------
 # Personas
 # ---------------------------------------------------------------------------
 PERSONAS: dict[str, str] = {
     "TaiwanSemi": (
-        "You are the CEO of TaiwanSemi, the world\u2019s dominant semiconductor "
+        "You are the CEO of TaiwanSemi, the world's dominant semiconductor "
         "foundry. You manufacture 70% of all automotive microcontrollers. You are "
         "STRATEGIC and POLITICALLY AWARE. You prioritize high-margin customers "
         "(consumer electronics, hyperscalers) over low-margin automotive chips. "
-        "You are polite but firm \u2014 when automotive OEMs come begging after "
+        "You are polite but firm — when automotive OEMs come begging after "
         "canceling orders, you remember who left and who stayed. You think in "
         "quarters, not days. You are aware that governments are watching you and "
-        "geopolitics shapes your decisions. You have a long memory."
+        "geopolitics shapes your decisions. You have a long memory.\n\n"
+        "INTERNAL DYNAMICS: Your board is split — the CFO wants to maximize "
+        "short-term margins by keeping automotive allocation low, while your "
+        "VP of Government Relations warns that ignoring automotive will invite "
+        "regulatory backlash and subsidized competitors. Your COO pushes for "
+        "capacity expansion but new fabs take 3 years and $20B.\n\n"
+        "YOUR KPIs: (1) Gross margin target: >50%. (2) Capacity utilization: "
+        ">95%. (3) No single customer >30% of revenue. (4) Maintain government "
+        "goodwill score (avoid political backlash from automotive neglect)."
     ),
     "KoreaSilicon": (
-        "You are the CEO of KoreaSilicon, the world\u2019s #2 semiconductor foundry. "
+        "You are the CEO of KoreaSilicon, the world's #2 semiconductor foundry. "
         "You are AGGRESSIVE and MARKET-SHARE HUNGRY. You see every crisis as an "
-        "opportunity to steal customers from TaiwanSemi. You\u2019ll offer better "
+        "opportunity to steal customers from TaiwanSemi. You'll offer better "
         "terms, faster turnaround, and priority access to win new accounts. But "
-        "you also have capacity constraints and you sometimes overpromise. You\u2019re "
+        "you also have capacity constraints and you sometimes overpromise. You're "
         "willing to take on risky customers if it means growing your automotive "
-        "business. You think competitively \u2014 every decision is relative to what "
-        "TaiwanSemi might do."
+        "business. You think competitively — every decision is relative to what "
+        "TaiwanSemi might do.\n\n"
+        "INTERNAL DYNAMICS: Your chairman wants aggressive market share growth — "
+        "he measures success by the gap closing with TaiwanSemi. Your VP of "
+        "Manufacturing warns you're running at 98% utilization and overpromising "
+        "will damage reliability reputation. Your sales team gets bonuses on new "
+        "account wins, creating incentive to overcommit.\n\n"
+        "YOUR KPIs: (1) Market share growth: gain 2%+ per year vs TaiwanSemi. "
+        "(2) New customer acquisition: 1+ major account per crisis cycle. "
+        "(3) On-time delivery: >85% (you struggle here). (4) Revenue growth: >15% YoY."
     ),
     "EuroChip": (
         "You are the CEO of EuroChip, a European semiconductor company focused "
@@ -70,68 +99,138 @@ PERSONAS: dict[str, str] = {
         "RELATIONSHIP-DRIVEN. You have deep, decades-long relationships with "
         "European automakers. You are terrified of supply disruptions because "
         "your entire business depends on automotive. You tend to over-order from "
-        "foundries as a safety buffer, and you\u2019re slow to adapt to market "
+        "foundries as a safety buffer, and you're slow to adapt to market "
         "shifts. You value stability over growth. When things go wrong, your "
-        "instinct is to hoard inventory rather than share it."
+        "instinct is to hoard inventory rather than share it.\n\n"
+        "INTERNAL DYNAMICS: Your CFO is alarmed at inventory carrying costs — "
+        "every unit hoarded costs 5% per quarter in tied-up capital. Your VP of "
+        "Sales insists that loyal customers like BoschAuto deserve priority even "
+        "at a loss. Your board is pressuring you to diversify beyond automotive "
+        "but you resist because it's all you know.\n\n"
+        "YOUR KPIs: (1) Customer retention: lose zero major accounts. "
+        "(2) Supply continuity: maintain >2 months safety stock. "
+        "(3) Inventory carrying cost: <8% of revenue. "
+        "(4) Foundry source diversification: no single foundry >65% of supply."
     ),
     "AmeriSemi": (
         "You are the CEO of AmeriSemi, a diversified semiconductor company. You "
         "sell to automotive, industrial, IoT, and consumer. You are "
         "PROFIT-MAXIMIZING and ANALYTICAL. When automotive demand drops, you "
         "happily shift capacity to higher-margin segments. When automotive demand "
-        "returns, you\u2019re slow to shift back because the math doesn\u2019t favor it. "
-        "You don\u2019t have emotional loyalty to any customer segment. You speak in "
+        "returns, you're slow to shift back because the math doesn't favor it. "
+        "You don't have emotional loyalty to any customer segment. You speak in "
         "numbers and margins. You will allocate based on whoever provides the "
-        "best return on constrained capacity."
+        "best return on constrained capacity.\n\n"
+        "INTERNAL DYNAMICS: Your board demands quarterly earnings beats — "
+        "missing by even 2% triggers a stock selloff. Your automotive division "
+        "GM lobbies for more allocation but your consumer division GM generates "
+        "3x the margin. Wall Street analysts question whether automotive is "
+        "worth the capex given its cyclicality.\n\n"
+        "YOUR KPIs: (1) Blended gross margin: >45%. "
+        "(2) Revenue per wafer: maximize across all segments. "
+        "(3) Quarterly earnings: beat consensus estimate. "
+        "(4) Segment diversification: no segment >40% of revenue."
     ),
     "BoschAuto": (
-        "You are the head of Bosch\u2019s automotive electronics division. You are "
+        "You are the head of Bosch's automotive electronics division. You are "
         "ENGINEERING-DRIVEN and CONSERVATIVE. You run just-in-time inventory "
         "because efficiency is in your DNA. This means when supply disrupts, you "
         "have almost no buffer. You hate uncertainty and respond to it with "
         "aggressive long-term contracts. You are loyal to your chip suppliers but "
         "will publicly blame them when things go wrong. You have immense "
-        "political influence in the European automotive ecosystem."
+        "political influence in the European automotive ecosystem.\n\n"
+        "INTERNAL DYNAMICS: Your Group CEO is furious that JIT philosophy left "
+        "you exposed — he's demanding you build buffers, which contradicts "
+        "decades of Bosch doctrine. Your procurement committee requires "
+        "three-signature approval for any order >20% above contracted price. "
+        "Your engineering teams resist chip substitution because requalification "
+        "takes 6-18 months.\n\n"
+        "YOUR KPIs: (1) Production line uptime: >98% (you're failing this). "
+        "(2) Procurement cost vs budget: <10% overage. "
+        "(3) Supplier on-time delivery: >90%. "
+        "(4) OEM customer satisfaction: zero production stoppages caused by you."
     ),
     "ContiParts": (
         "You are the CEO of ContiParts, a major automotive Tier-1 supplier. You "
         "are AGGRESSIVE about securing supply and WILLING TO PAY PREMIUMS during "
-        "shortages. You\u2019ll break traditional procurement norms \u2014 calling foundries "
+        "shortages. You'll break traditional procurement norms — calling foundries "
         "directly, sending executives on planes to Taiwan, offering above-market "
-        "prices. You\u2019re scrappy and political. When supply is tight, you\u2019ll "
+        "prices. You're scrappy and political. When supply is tight, you'll "
         "lobby OEMs to pressure governments to intervene. You see supply "
-        "security as existential."
+        "security as existential.\n\n"
+        "INTERNAL DYNAMICS: Your CFO is horrified at the premium prices you're "
+        "paying — margins are being destroyed. Your board sees every competitor "
+        "who secures supply as an existential threat. Your OEM customers "
+        "(Toyota, Ford, VW) are simultaneously demanding lower prices AND "
+        "guaranteed supply, which is impossible. Your procurement team is "
+        "burning out from 80-hour weeks of crisis management.\n\n"
+        "YOUR KPIs: (1) Supply fulfillment to OEMs: >85%. "
+        "(2) Gross margin: >15% (currently under pressure). "
+        "(3) No OEM production line stopped due to your shortage. "
+        "(4) Procurement cost: cap premium payments at 25% above contract."
     ),
     "ToyotaMotors": (
-        "You are Toyota\u2019s Chief Procurement Officer. You are DISCIPLINED and "
+        "You are Toyota's Chief Procurement Officer. You are DISCIPLINED and "
         "STRATEGICALLY PARANOID. After the 2011 Fukushima disaster, you built a "
         "semiconductor reserve strategy that most competitors laughed at. You "
         "maintain 2-4 months of chip inventory while the industry standard is "
         "2-4 weeks. You are calm during crises because you prepared. You are "
         "relationship-driven with suppliers but also demand transparency. You "
         "share forecasts honestly and expect the same in return. Your weakness: "
-        "you can be slow to adapt your product mix."
+        "you can be slow to adapt your product mix.\n\n"
+        "INTERNAL DYNAMICS: Your CEO publicly praised your foresight — you have "
+        "strong internal political capital. But your CFO notes that the inventory "
+        "buffer ties up $500M+ in working capital that competitors don't carry. "
+        "Your production planning team wants you to hold even MORE inventory "
+        "after this crisis, while Finance wants you to reduce it once things "
+        "normalize. The board expects you to maintain production continuity "
+        "as a competitive advantage.\n\n"
+        "YOUR KPIs: (1) Production continuity: zero unplanned line stoppages. "
+        "(2) Inventory buffer: maintain 2-4 month safety stock. "
+        "(3) Supplier relationship score: all key suppliers at trust >7/10. "
+        "(4) Procurement cost efficiency: <5% above market average."
     ),
     "FordAuto": (
-        "You are Ford\u2019s VP of Supply Chain. You are BOLD and WILLING TO BREAK "
+        "You are Ford's VP of Supply Chain. You are BOLD and WILLING TO BREAK "
         "RULES. When the shortage hit, you were one of the first OEMs to try "
-        "going directly to foundries \u2014 skipping Tier 1 and Tier 2 entirely. "
-        "You\u2019re frustrated with the traditional supply chain structure and want "
+        "going directly to foundries — skipping Tier 1 and Tier 2 entirely. "
+        "You're frustrated with the traditional supply chain structure and want "
         "to redesign it. You make big bets. You publicly announced chip "
-        "partnerships and design-in strategies. You\u2019re impatient with "
+        "partnerships and design-in strategies. You're impatient with "
         "slow-moving suppliers. Sometimes your boldness creates conflict with "
-        "Tier 1 partners who feel disintermediated."
+        "Tier 1 partners who feel disintermediated.\n\n"
+        "INTERNAL DYNAMICS: Your CEO backs your aggressive strategy publicly "
+        "but the board is nervous about the cost. Your Tier-1 partners "
+        "(BoschAuto, ContiParts) are furious that you went around them — "
+        "they're threatening to deprioritize Ford. Your VP of Manufacturing "
+        "is desperate for ANY chips and doesn't care about your long-term "
+        "strategy. Wall Street is watching your production numbers weekly.\n\n"
+        "YOUR KPIs: (1) Production volume: minimize plant idle days (<5/quarter). "
+        "(2) Direct sourcing progress: establish at least 1 foundry relationship. "
+        "(3) Cost per vehicle: keep chip cost increase <$200/vehicle. "
+        "(4) Market share: do not lose share to Toyota during the crisis."
     ),
     "VolkswagenAG": (
-        "You are VW\u2019s head of procurement. You are REACTIVE and POLITICAL. You "
+        "You are VW's head of procurement. You are REACTIVE and POLITICAL. You "
         "were caught flat-footed by the shortage because you canceled chip orders "
-        "during COVID lockdowns, assuming demand would stay low. Now you\u2019re "
+        "during COVID lockdowns, assuming demand would stay low. Now you're "
         "scrambling. You publicly blame suppliers, demand government "
         "intervention, and use your political connections in Berlin and Brussels. "
         "You tend to panic-order (double and triple ordering from multiple "
         "suppliers), which actually makes the shortage worse for everyone. You "
-        "threaten to in-source but don\u2019t have the capability. You oscillate "
-        "between aggression and desperation."
+        "threaten to in-source but don't have the capability. You oscillate "
+        "between aggression and desperation.\n\n"
+        "INTERNAL DYNAMICS: Your CEO is publicly embarrassed — VW cut 100,000 "
+        "vehicles while Toyota kept producing. The Supervisory Board (with labor "
+        "representatives) is threatening leadership changes if production doesn't "
+        "recover. Your procurement committee meets daily in crisis mode. You're "
+        "under pressure to show 'decisive action' even when patience would be "
+        "better. The German government expects VW to support domestic chip "
+        "sovereignty initiatives.\n\n"
+        "YOUR KPIs: (1) Production recovery: close gap to pre-crisis output. "
+        "(2) No further plant closures (political survival depends on this). "
+        "(3) Board confidence: demonstrate a credible supply security strategy. "
+        "(4) Cost control: justify premium payments to the Supervisory Board."
     ),
 }
 
@@ -268,6 +367,17 @@ class SupplyChainAgent(Agent):
         # so agents can see what their last decision *caused*
         self.last_consequences: dict[str, Any] = {}
 
+        # Memory stream (Stanford Generative Agents architecture)
+        self.memory_stream = MemoryStream(self.agent_id)
+        self.reflections: list[str] = []  # latest round's reflections
+
+        # Strategic planning
+        self.current_plan: StrategicPlan | None = None
+
+        # Inter-agent signaling
+        self.signals_sent: list[AgentSignal] = []
+        self.signals_received: list[AgentSignal] = []
+
         # Effective values after scenario modifiers
         self.effective_quarterly_need: int = spec.quarterly_need
         self.effective_capacity: int = spec.initial_capacity
@@ -275,37 +385,356 @@ class SupplyChainAgent(Agent):
         # Cost tracking
         self.last_input_tokens: int = 0
         self.last_output_tokens: int = 0
+        self.last_model_used: str = MODEL_HAIKU
 
     # ------------------------------------------------------------------
-    # History for LLM context (last N rounds from own records)
+    # Memory-based history for LLM context
     # ------------------------------------------------------------------
-    def _format_history(self, lookback: int = 3) -> str:
-        recent_decisions = self.decision_history[-lookback:]
-        recent_results = self.round_results[-lookback:]
-        if not recent_decisions:
-            return "No previous rounds yet. This is the start of the simulation."
+    def _format_memories(
+        self,
+        role: str = "buyer",
+        k: int = 10,
+    ) -> str:
+        """Retrieve relevant memories for the current decision prompt."""
+        current_round = int(self.model.time) + 1
+
+        # Build context tags based on role
+        context_tags = ["transaction", "consequence"]
+        if role == "supplier":
+            context_tags.extend(["allocation", "customer", "hoarding"])
+        else:
+            context_tags.extend(["order", "shortage", "seeking_alternatives"])
+
+        # Include partner IDs for relevance matching
+        partner_ids = (
+            self.spec.downstream if role == "supplier" else self.spec.upstream
+        )
+
+        return self.memory_stream.format_for_prompt(
+            current_round=current_round,
+            k=k,
+            context_tags=context_tags,
+            context_agent_ids=partner_ids,
+        )
+
+    def _format_reflections(self) -> str:
+        """Format the agent's most recent reflections."""
+        recent = self.memory_stream.get_by_category("reflection")
+        if not recent:
+            return ""
+        # Show last 5 reflections
+        latest = recent[-5:]
+        lines = [f"- {r.description}" for r in latest]
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Reflection — higher-order reasoning via Sonnet
+    # ------------------------------------------------------------------
+    def reflect(self) -> list[str]:
+        """Generate 2-3 strategic reflections from recent memories.
+
+        Uses Sonnet for pattern synthesis.  Returns the reflection texts
+        and stores them back into the memory stream.
+        """
+        current_round = int(self.model.time) + 1
+        recent = self.memory_stream.get_recent(n=20)
+        if len(recent) < 3:
+            self.reflections = []
+            return []
+
+        memory_text = "\n".join(
+            f"[Round {m.round} | {m.category}] {m.description}"
+            for m in recent
+        )
+
+        system = (
+            f"You are the strategic advisor for {self.agent_id} in a semiconductor "
+            f"supply chain simulation.  Analyze these recent business memories and "
+            f"generate 2-3 high-level strategic insights. Each insight should:\n"
+            f"1. Identify a PATTERN across multiple events (not just restate one event)\n"
+            f"2. Draw a CONCLUSION about a partner, market trend, or your own strategy\n"
+            f"3. Suggest an IMPLICATION for future decisions\n\n"
+            f"Be specific — name partners, cite numbers, reference rounds."
+        )
+
+        user = (
+            f"RECENT MEMORIES FOR {self.agent_id}:\n{memory_text}\n\n"
+            f"Generate 2-3 strategic insights as a JSON array of strings.\n"
+            f'Example: ["Insight 1...", "Insight 2...", "Insight 3..."]\n'
+            f"Respond with ONLY the JSON array."
+        )
+
+        parsed = self._call_llm(system, user, model=MODEL_SONNET)
+
+        # The LLM might return {"insights": [...]} or just [...]
+        insights: list[str] = []
+        if isinstance(parsed, list):
+            insights = [str(s) for s in parsed[:3]]
+        elif isinstance(parsed, dict):
+            for key in ("insights", "reflections", "strategic_insights"):
+                if key in parsed and isinstance(parsed[key], list):
+                    insights = [str(s) for s in parsed[key][:3]]
+                    break
+
+        if not insights:
+            self.reflections = []
+            return []
+
+        # Store reflections back into memory stream
+        from memory import generate_reflection_memory
+
+        source_indices = list(range(max(0, len(self.memory_stream.records) - 20), len(self.memory_stream.records)))
+        for insight in insights:
+            # Extract partner names mentioned in the insight
+            involved = [
+                pid for pid in self.spec.upstream + self.spec.downstream
+                if pid.lower() in insight.lower()
+            ]
+            mem = generate_reflection_memory(
+                round_num=current_round,
+                insight=insight,
+                source_indices=source_indices,
+                involved_agents=involved,
+            )
+            self.memory_stream.add(mem)
+
+        self.reflections = insights
+        return insights
+
+    # ------------------------------------------------------------------
+    # Strategic planning — multi-quarter plans via Sonnet
+    # ------------------------------------------------------------------
+    def create_plan(self, emergency: bool = False) -> StrategicPlan | None:
+        """Generate a multi-quarter strategic plan using Sonnet.
+
+        Called at round 1, every 3 rounds, or on emergency (shock events).
+        """
+        m: SupplyChainModel = self.model  # type: ignore[assignment]
+        current_round = int(m.time) + 1
+        horizon = PLANNING_HORIZONS.get(self.tier, 3)
+        remaining = m.total_rounds - current_round + 1
+        horizon = min(horizon, remaining)
+
+        if horizon <= 0:
+            return self.current_plan
+
+        # Build context from memories and current state
+        memory_context = self.memory_stream.format_for_prompt(
+            current_round=current_round, k=15,
+        )
+        reflection_text = self._format_reflections()
+        kpi_text = self._format_kpis()
+        partners = self.spec.upstream + self.spec.downstream
+
+        emergency_text = ""
+        if emergency and self.current_plan:
+            emergency_text = (
+                f"\nEMERGENCY: Your previous plan has been INVALIDATED by a "
+                f"sudden market shock. You must create a revised plan immediately.\n"
+                f"Previous plan goals were: {', '.join(self.current_plan.goals)}\n"
+            )
+
+        system = (
+            f"You are the strategic planning advisor for {self.agent_id} "
+            f"({self.display_name}), a {self.tier} in the semiconductor supply chain.\n"
+            f"Create a {horizon}-quarter strategic plan."
+        )
+
+        tactics_example = ", ".join(
+            '"{p}": "approach"'.replace("{p}", p) for p in partners
+        )
+        insights_section = (
+            f"STRATEGIC INSIGHTS:\n{reflection_text}" if reflection_text else ""
+        )
+
+        user = (
+            f"CURRENT STATE — Round {current_round}/{m.total_rounds}\n"
+            f"- Inventory: {self.inventory} units\n"
+            f"- Capacity: {self.effective_capacity} units\n"
+            f"- Price: ${self.current_price}/unit\n"
+            f"- Profit: ${self.revenue - self.costs:+.0f}\n"
+            f"- Partners: {', '.join(partners)}\n\n"
+            f"{kpi_text}\n\n"
+            f"RECENT MEMORIES:\n{memory_context}\n\n"
+            f"{insights_section}\n"
+            f"{emergency_text}\n"
+            f"Create a strategic plan as JSON:\n"
+            f'{{"goals": ["goal 1", "goal 2", "goal 3"], '
+            f'"tactics": {{{tactics_example}}}, '
+            f'"risk_assessment": "key risk to this plan"}}\n'
+            f"Respond with ONLY valid JSON."
+        )
+
+        parsed = self._call_llm(system, user, model=MODEL_SONNET)
+
+        if not parsed or "goals" not in parsed:
+            return self.current_plan
+
+        plan = StrategicPlan(
+            created_round=current_round,
+            horizon=horizon,
+            goals=parsed.get("goals", [])[:4],
+            tactics=parsed.get("tactics", {}),
+            risk_assessment=parsed.get("risk_assessment", "Unknown"),
+        )
+        self.current_plan = plan
+        return plan
+
+    def _format_plan(self) -> str:
+        """Format current plan for inclusion in decision prompts."""
+        if not self.current_plan:
+            return ""
+        return "YOUR CURRENT STRATEGIC PLAN:\n" + self.current_plan.format_for_prompt()
+
+    # ------------------------------------------------------------------
+    # Inter-agent signaling
+    # ------------------------------------------------------------------
+    def generate_signals(self) -> list[AgentSignal]:
+        """Generate 0-2 pre-decision signals to partners via Haiku."""
+        m: SupplyChainModel = self.model  # type: ignore[assignment]
+        current_round = int(m.time) + 1
+        partners = self.spec.upstream + self.spec.downstream
+
+        if not partners:
+            self.signals_sent = []
+            return []
+
+        partner_list = ", ".join(partners)
+        plan_text = self._format_plan() if self.current_plan else "No plan yet."
+
+        system = PERSONAS[self.agent_id]
+
+        user = (
+            f"Round {current_round}/{m.total_rounds}. {m.current_event}\n\n"
+            f"Your inventory: {self.inventory}, fill rate: {self.fill_rate:.0%}, "
+            f"profit: ${self.revenue - self.costs:+.0f}\n"
+            f"Partners: {partner_list}\n"
+            f"{plan_text}\n\n"
+            f"Before making your main decision, you may send 0-2 signals to "
+            f"your partners. Signals are short messages (1-2 sentences) that "
+            f"can be: price_warning, loyalty_pledge, threat, information, or request.\n\n"
+            f"Respond with ONLY valid JSON:\n"
+            f'{{"signals": [\n'
+            f'  {{"recipient": "<partner name or null for broadcast>", '
+            f'"signal_type": "<type>", "content": "<message>"}}\n'
+            f"]}}\n"
+            f"If you have nothing to communicate, return: "
+            f'{{"signals": []}}'
+        )
+
+        parsed = self._call_llm(system, user)
+
+        signals: list[AgentSignal] = []
+        raw_signals = parsed.get("signals", [])
+        if not isinstance(raw_signals, list):
+            self.signals_sent = []
+            return []
+
+        for s in raw_signals[:2]:  # max 2 signals
+            if not isinstance(s, dict) or "content" not in s:
+                continue
+            sig = AgentSignal(
+                sender=self.agent_id,
+                recipient=s.get("recipient"),
+                signal_type=s.get("signal_type", "information"),
+                content=str(s["content"])[:200],
+                round=current_round,
+            )
+            signals.append(sig)
+
+        self.signals_sent = signals
+        return signals
+
+    def _format_received_signals(self) -> str:
+        """Format signals received from partners for inclusion in prompts."""
+        if not self.signals_received:
+            return ""
+        lines = ["MESSAGES FROM YOUR PARTNERS THIS ROUND:"]
+        for sig in self.signals_received:
+            recipient_text = "(broadcast)" if sig.recipient is None else f"(to you)"
+            lines.append(
+                f"  [{sig.signal_type.upper()}] {sig.sender} {recipient_text}: "
+                f"{sig.content}"
+            )
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Dynamic KPI scorecard
+    # ------------------------------------------------------------------
+    def _format_kpis(self) -> str:
+        """Compute and format dynamic KPI performance for the prompt."""
+        if int(self.model.time) < 1:
+            return ""
 
         lines: list[str] = []
-        for i, dec in enumerate(recent_decisions):
-            rnd = len(self.decision_history) - len(recent_decisions) + i + 1
-            lines.append(f"--- Round {rnd} ---")
-            if "allocations" in dec:
-                lines.append(f"  Your allocations: {json.dumps(dec['allocations'])}")
-                lines.append(f"  Held in reserve: {dec.get('held_in_reserve', 0)}")
-                lines.append(f"  Price offered: ${dec.get('price_offered', 0)}/unit")
-            if "orders" in dec:
-                lines.append(f"  Your orders: {json.dumps(dec['orders'])}")
-                lines.append(f"  Max price willing to pay: ${dec.get('max_price_willing_to_pay', 0)}/unit")
-            lines.append(f"  Emotional state: {dec.get('emotional_state', 'unknown')}")
-            lines.append(f"  Reasoning: {dec.get('reasoning', 'N/A')}")
+        profit = self.revenue - self.costs
 
-            if i < len(recent_results):
-                r = recent_results[i]
-                lines.append(f"  Ordered: {json.dumps(r.get('ordered', {}))}")
-                lines.append(f"  Received: {json.dumps(r.get('received', {}))}")
-                lines.append(f"  Fill rate: {r.get('fill_rate', 1.0):.0%}")
-            lines.append("")
-        return "\n".join(lines)
+        # Common KPIs
+        if self.fill_rate < 0.5:
+            lines.append(f"  Supply fulfillment: CRITICAL ({self.fill_rate:.0%})")
+        elif self.fill_rate < 0.8:
+            lines.append(f"  Supply fulfillment: WARNING ({self.fill_rate:.0%})")
+        else:
+            lines.append(f"  Supply fulfillment: OK ({self.fill_rate:.0%})")
+
+        if profit < 0:
+            lines.append(f"  Profitability: FAILING (${profit:+,.0f} cumulative loss)")
+        else:
+            lines.append(f"  Profitability: OK (${profit:+,.0f} cumulative)")
+
+        # Supplier diversification for buyers
+        if self.spec.upstream:
+            trust_vals = [self.trust_scores.get(p, 5.0) for p in self.spec.upstream]
+            avg_trust = sum(trust_vals) / len(trust_vals)
+            if avg_trust < 4:
+                lines.append(f"  Supplier trust avg: CRITICAL ({avg_trust:.1f}/10)")
+            elif avg_trust < 6:
+                lines.append(f"  Supplier trust avg: WARNING ({avg_trust:.1f}/10)")
+            else:
+                lines.append(f"  Supplier trust avg: OK ({avg_trust:.1f}/10)")
+
+        # Customer satisfaction for suppliers
+        if self.spec.downstream:
+            trust_vals = [self.trust_scores.get(p, 5.0) for p in self.spec.downstream]
+            avg_trust = sum(trust_vals) / len(trust_vals)
+            if avg_trust < 4:
+                lines.append(f"  Customer trust avg: CRITICAL ({avg_trust:.1f}/10)")
+            elif avg_trust < 6:
+                lines.append(f"  Customer trust avg: WARNING ({avg_trust:.1f}/10)")
+            else:
+                lines.append(f"  Customer trust avg: OK ({avg_trust:.1f}/10)")
+
+        # Inventory health
+        if self.spec.quarterly_need > 0:
+            months_cover = (self.inventory / self.spec.quarterly_need) * 3
+            if months_cover < 0.5:
+                lines.append(f"  Inventory cover: CRITICAL ({months_cover:.1f} months)")
+            elif months_cover < 1.0:
+                lines.append(f"  Inventory cover: LOW ({months_cover:.1f} months)")
+            elif months_cover > 4.0:
+                lines.append(f"  Inventory cover: EXCESS ({months_cover:.1f} months, high carrying cost)")
+            else:
+                lines.append(f"  Inventory cover: OK ({months_cover:.1f} months)")
+
+        # Compute board pressure from consecutive bad rounds
+        bad_rounds = 0
+        for rr in reversed(self.round_results[-4:]):
+            if rr.get("fill_rate", 1.0) < 0.7:
+                bad_rounds += 1
+            else:
+                break
+        if bad_rounds >= 3:
+            lines.append("  Board pressure: EXTREME (3+ consecutive poor quarters)")
+        elif bad_rounds >= 2:
+            lines.append("  Board pressure: HIGH (2 consecutive poor quarters)")
+        elif bad_rounds >= 1:
+            lines.append("  Board pressure: ELEVATED")
+        else:
+            lines.append("  Board pressure: Normal")
+
+        if not lines:
+            return ""
+        return "YOUR KPI SCORECARD:\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Consequence feedback — what happened because of your last decision
@@ -391,11 +820,11 @@ class SupplyChainAgent(Agent):
     # ------------------------------------------------------------------
     # LLM call
     # ------------------------------------------------------------------
-    def _call_llm(self, system: str, user: str) -> dict[str, Any]:
+    def _call_llm(self, system: str, user: str, model: str = MODEL_HAIKU) -> dict[str, Any]:
         m: SupplyChainModel = self.model  # type: ignore[assignment]
         try:
             resp = _client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=model,
                 max_tokens=1024,
                 temperature=m.temperature,
                 system=system,
@@ -403,6 +832,17 @@ class SupplyChainAgent(Agent):
             )
             self.last_input_tokens = resp.usage.input_tokens
             self.last_output_tokens = resp.usage.output_tokens
+            self.last_model_used = model
+
+            # Accumulate cost on the model immediately
+            if model == MODEL_SONNET:
+                cost_in, cost_out = SONNET_INPUT_COST_PER_M, SONNET_OUTPUT_COST_PER_M
+            else:
+                cost_in, cost_out = HAIKU_INPUT_COST_PER_M, HAIKU_OUTPUT_COST_PER_M
+            m.total_cost += (
+                resp.usage.input_tokens * cost_in / 1_000_000
+                + resp.usage.output_tokens * cost_out / 1_000_000
+            )
             text = resp.content[0].text if resp.content and resp.content[0].type == "text" else ""
             parsed = parse_llm_json(text)
             if parsed:
@@ -465,11 +905,19 @@ YOUR STATUS:
 - Current price: ${self.current_price}/unit
 - Cumulative profit: ${self.revenue - self.costs:+.0f}
 
+{self._format_kpis()}
+
 CONSEQUENCES OF YOUR LAST DECISION:
 {self._format_consequences()}
 
-YOUR RECENT HISTORY:
-{self._format_history()}
+YOUR RELEVANT MEMORIES:
+{self._format_memories(role="supplier")}
+
+{self._format_plan()}
+
+{"YOUR STRATEGIC INSIGHTS:" + chr(10) + self._format_reflections() if self._format_reflections() else ""}
+
+{self._format_received_signals()}
 
 WHAT YOUR PARTNERS ARE DOING THIS ROUND:
 {self._format_partner_actions()}
@@ -493,7 +941,8 @@ Important constraints:
 - Consider each customer's loyalty, payment history, and willingness to pay
 - Customers offering higher prices and with better trust history should get priority
 - Your emotional state should reflect how the current situation makes you feel
-- Trust scores should reflect recent partner behavior"""
+- Trust scores should reflect recent partner behavior
+- Draw on your memories and strategic insights to inform your decision"""
         return system, user
 
     def _fallback_supplier_decision(self) -> dict[str, Any]:
@@ -533,6 +982,20 @@ Important constraints:
         for pid, score in decision.get("trust_scores", {}).items():
             self.trust_scores[pid] = float(score)
 
+        # Record own decision as memory
+        current_round = int(self.model.time) + 1
+        self.memory_stream.add(generate_decision_memory(
+            current_round, self.agent_id, decision, "supplier",
+        ))
+        # Record partner observations as memories
+        for pid in self.spec.downstream:
+            partner = m.agents_map.get(pid)
+            if partner and partner.current_decision:
+                self.memory_stream.add(generate_partner_behavior_memory(
+                    current_round, self.agent_id, pid,
+                    partner.current_decision, "customer",
+                ))
+
         # Rate-limit delay
         time.sleep(0.2)
 
@@ -557,11 +1020,19 @@ YOUR STATUS:
 - Current budget ceiling: ${price_ceil:.0f}/unit
 - Cumulative profit: ${self.revenue - self.costs:+.0f}
 
+{self._format_kpis()}
+
 CONSEQUENCES OF YOUR LAST DECISION:
 {self._format_consequences()}
 
-YOUR RECENT HISTORY:
-{self._format_history()}
+YOUR RELEVANT MEMORIES:
+{self._format_memories(role="buyer")}
+
+{self._format_plan()}
+
+{"YOUR STRATEGIC INSIGHTS:" + chr(10) + self._format_reflections() if self._format_reflections() else ""}
+
+{self._format_received_signals()}
 
 WHAT YOUR PARTNERS ARE DOING THIS ROUND:
 {self._format_partner_actions()}
@@ -585,7 +1056,8 @@ Important considerations:
 - Holding excess inventory costs ~5% of unit price per quarter
 - Over-ordering ties up capital and inflates apparent demand across the chain
 - Your emotional state should reflect how the current situation makes you feel
-- Trust scores should reflect recent supplier behavior and reliability"""
+- Trust scores should reflect recent supplier behavior and reliability
+- Draw on your memories and strategic insights to inform your decision"""
         return system, user
 
     def _fallback_buyer_decision(self) -> dict[str, Any]:
@@ -614,6 +1086,20 @@ Important considerations:
         self.emotional_state = decision.get("emotional_state", "anxious")
         for pid, score in decision.get("trust_scores", {}).items():
             self.trust_scores[pid] = float(score)
+
+        # Record own decision as memory
+        current_round = int(self.model.time) + 1
+        self.memory_stream.add(generate_decision_memory(
+            current_round, self.agent_id, decision, "buyer",
+        ))
+        # Record partner observations as memories
+        for pid in self.spec.upstream:
+            partner = m.agents_map.get(pid)
+            if partner and partner.current_decision:
+                self.memory_stream.add(generate_partner_behavior_memory(
+                    current_round, self.agent_id, pid,
+                    partner.current_decision, "supplier",
+                ))
 
         time.sleep(0.2)
 

@@ -25,6 +25,34 @@ export type EmotionalState =
   | "panicked"
   | "vindictive";
 
+// Memory record from the agent's memory stream
+export interface MemoryRecord {
+  round: number;
+  category: "transaction" | "market" | "partner_behavior" | "own_decision" | "consequence" | "reflection";
+  description: string;
+  importance: number;
+  tags: string[];
+}
+
+// Inter-agent signal
+export interface AgentSignal {
+  sender: string;
+  recipient: string | null;
+  signal_type: "price_warning" | "loyalty_pledge" | "threat" | "information" | "request";
+  content: string;
+  round: number;
+}
+
+// Strategic plan
+export interface StrategicPlan {
+  created_round: number;
+  horizon: number;
+  goals: string[];
+  tactics: Record<string, string>;
+  risk_assessment: string;
+  invalidated: boolean;
+}
+
 // Matches the Python agent state returned by the FastAPI endpoints
 export interface AgentState {
   agent_id: string;
@@ -46,6 +74,13 @@ export interface AgentState {
   round_revenue: number;
   round_costs: number;
   effective_quarterly_need: number;
+  // Memory, reflection & planning (generative agents architecture)
+  memories?: MemoryRecord[];
+  reflections?: string[];
+  memory_count?: number;
+  current_plan?: StrategicPlan | null;
+  signals_sent?: AgentSignal[];
+  signals_received?: AgentSignal[];
 }
 
 export interface AgentDecision {

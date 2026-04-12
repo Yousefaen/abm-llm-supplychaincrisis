@@ -6,8 +6,6 @@ from mesa import Model, DataCollector
 
 from agents import (
     AGENT_SPECS,
-    HAIKU_INPUT_COST_PER_M,
-    HAIKU_OUTPUT_COST_PER_M,
     ChipDesignerAgent,
     FoundryAgent,
     OEMAgent,
@@ -16,6 +14,11 @@ from agents import (
     create_agent,
 )
 from debug_session import dbg_log
+from memory import (
+    generate_consequence_memory,
+    generate_market_memory,
+    generate_transaction_memory,
+)
 from scenarios import (
     CAPACITY_SHOCKS,
     DEMAND_MULTIPLIERS,
@@ -108,8 +111,20 @@ class SupplyChainModel(Model):
             self.current_event = SCENARIO_EVENTS.get(current_round, "No event.")
             self.round_decisions = []
 
+            # Store market event as memory for all agents
+            market_mem = generate_market_memory(current_round, self.current_event)
+            for agent in self.agents_map.values():
+                agent.memory_stream.add(market_mem)
+
             # Apply mechanical scenario effects for this round
             self._apply_scenario_effects(current_round)
+
+            # ----------------------------------------------------------
+            # Phase 0: STRATEGIC PLANNING (Sonnet)
+            # Create plans at round 1, refresh every 3 rounds,
+            # emergency replan on shock events
+            # ----------------------------------------------------------
+            self._run_planning(current_round)
 
             # Clear current decisions and per-round financials
             for agent in self.agents_map.values():
@@ -117,6 +132,11 @@ class SupplyChainModel(Model):
                 agent.round_revenue = 0.0
                 agent.round_costs = 0.0
                 agent.inventory_cost = 0.0
+
+            # ----------------------------------------------------------
+            # Phase 0b: SIGNALING — agents send pre-decision messages
+            # ----------------------------------------------------------
+            self._run_signaling(current_round)
 
             # ----------------------------------------------------------
             # Phase 1: ORDERING (bottom-up)
@@ -171,12 +191,15 @@ class SupplyChainModel(Model):
             )
             # endregion
 
-            # Accumulate LLM API cost
-            for agent in self.agents_map.values():
-                self.total_cost += (
-                    agent.last_input_tokens * HAIKU_INPUT_COST_PER_M / 1_000_000
-                    + agent.last_output_tokens * HAIKU_OUTPUT_COST_PER_M / 1_000_000
-                )
+            # ----------------------------------------------------------
+            # Phase 4: MEMORY GENERATION — create memories from this round
+            # ----------------------------------------------------------
+            self._generate_round_memories(current_round)
+
+            # ----------------------------------------------------------
+            # Phase 5: REFLECTION — agents synthesize patterns (Sonnet)
+            # ----------------------------------------------------------
+            self._run_reflections(current_round)
 
             # Apply inventory carrying costs
             self._apply_carrying_costs()
@@ -241,6 +264,164 @@ class SupplyChainModel(Model):
         for agent in self.agents_map.values():
             if agent.agent_id not in shocks:
                 agent.effective_capacity = agent.spec.initial_capacity
+
+    # ------------------------------------------------------------------
+    # Signaling — pre-decision communication between agents
+    # ------------------------------------------------------------------
+    def _run_signaling(self, current_round: int) -> None:
+        """Each agent generates 0-2 signals, then we route them to recipients."""
+        # Clear previous signals
+        for agent in self.agents_map.values():
+            agent.signals_received = []
+
+        all_signals = []
+        for agent in self.agents_map.values():
+            signals = agent.generate_signals()
+            all_signals.extend(signals)
+            if signals:
+                self.round_decisions.append({
+                    "agent_id": agent.agent_id,
+                    "tier": agent.tier,
+                    "role": "signaling",
+                    "decision": {
+                        "signals": [s.to_dict() for s in signals],
+                    },
+                    "input_tokens": agent.last_input_tokens,
+                    "output_tokens": agent.last_output_tokens,
+                })
+
+        # Route signals to recipients
+        for signal in all_signals:
+            if signal.recipient is None:
+                # Broadcast: deliver to all partners
+                sender = self.agents_map.get(signal.sender)
+                if sender:
+                    for pid in sender.spec.upstream + sender.spec.downstream:
+                        partner = self.agents_map.get(pid)
+                        if partner:
+                            partner.signals_received.append(signal)
+            else:
+                recipient = self.agents_map.get(signal.recipient)
+                if recipient:
+                    recipient.signals_received.append(signal)
+
+    # ------------------------------------------------------------------
+    # Strategic planning — create/refresh/invalidate multi-quarter plans
+    # ------------------------------------------------------------------
+    def _run_planning(self, current_round: int) -> None:
+        """Create or refresh strategic plans for agents."""
+        # Detect if this round has a shock that should trigger emergency replan
+        has_capacity_shock = current_round in CAPACITY_SHOCKS
+        prev_demand = DEMAND_MULTIPLIERS.get(current_round - 1, 1.0)
+        curr_demand = DEMAND_MULTIPLIERS.get(current_round, 1.0)
+        demand_shift = abs(curr_demand - prev_demand) > 0.15
+
+        for agent in self.agents_map.values():
+            needs_plan = False
+            emergency = False
+
+            # Round 1: everyone creates initial plan
+            if current_round == 1:
+                needs_plan = True
+            # Refresh every 3 rounds
+            elif current_round % 3 == 1:
+                needs_plan = True
+            # Emergency: shock event invalidates existing plan
+            elif has_capacity_shock or demand_shift:
+                if agent.current_plan and not agent.current_plan.invalidated:
+                    agent.current_plan.invalidated = True
+                    needs_plan = True
+                    emergency = True
+
+            if needs_plan:
+                plan = agent.create_plan(emergency=emergency)
+                if plan:
+                    self.round_decisions.append({
+                        "agent_id": agent.agent_id,
+                        "tier": agent.tier,
+                        "role": "planning",
+                        "decision": {"plan": plan.to_dict()},
+                        "input_tokens": agent.last_input_tokens,
+                        "output_tokens": agent.last_output_tokens,
+                    })
+
+    # ------------------------------------------------------------------
+    # Memory generation — create memories from resolution outcomes
+    # ------------------------------------------------------------------
+    def _generate_round_memories(self, current_round: int) -> None:
+        """After resolution, generate transaction and consequence memories."""
+        # Transaction memories from supplier consequences
+        for supplier in list(self.foundries) + list(self.designers) + list(self.tier1s):
+            cons = supplier.last_consequences.get("customer_fill_rates", {})
+            for buyer_id, info in cons.items():
+                # Supplier's memory of this transaction
+                supplier.memory_stream.add(generate_transaction_memory(
+                    current_round, supplier.agent_id, buyer_id,
+                    ordered=info["ordered"],
+                    delivered=info["delivered"],
+                    price=supplier.current_price,
+                    is_supplier=True,
+                ))
+
+        # Transaction + consequence memories for buyers
+        for buyer in list(self.oems) + list(self.tier1s) + list(self.designers):
+            perf = buyer.last_consequences.get("supplier_performance", {})
+            trust_changes: dict[str, float] = {}
+            for sid, info in perf.items():
+                buyer.memory_stream.add(generate_transaction_memory(
+                    current_round, buyer.agent_id, sid,
+                    ordered=info["ordered"],
+                    delivered=info["received"],
+                    price=info["price_paid"],
+                    is_supplier=False,
+                ))
+                # Compute trust delta for consequence memory
+                old_trust = buyer.trust_scores.get(sid, 5.0)
+                trust_changes[sid] = round(old_trust - 7.0, 1)  # delta from baseline
+
+            # Consequence summary memory
+            profit = buyer.last_consequences.get("profit_this_round", 0)
+            buyer.memory_stream.add(generate_consequence_memory(
+                current_round, buyer.agent_id,
+                profit=profit,
+                fill_rate=buyer.fill_rate,
+                trust_changes=trust_changes,
+            ))
+
+        # Consequence memories for suppliers
+        for supplier in list(self.foundries) + list(self.designers) + list(self.tier1s):
+            profit = supplier.last_consequences.get("profit_this_round", 0)
+            cons = supplier.last_consequences.get("customer_fill_rates", {})
+            trust_changes = {}
+            for bid, info in cons.items():
+                trust_changes[bid] = info.get("trust_delta", 0)
+            supplier.memory_stream.add(generate_consequence_memory(
+                current_round, supplier.agent_id,
+                profit=profit,
+                fill_rate=1.0,  # suppliers always "fill" in their own terms
+                trust_changes=trust_changes,
+            ))
+
+    # ------------------------------------------------------------------
+    # Reflection — agents generate higher-order insights via Sonnet
+    # ------------------------------------------------------------------
+    def _run_reflections(self, current_round: int) -> None:
+        """Run reflection for all agents after memories are generated."""
+        if current_round < 2:
+            return  # Not enough memories to reflect on in round 1
+
+        for agent in self.agents_map.values():
+            insights = agent.reflect()
+            if insights:
+                # Record reflection event for streaming
+                self.round_decisions.append({
+                    "agent_id": agent.agent_id,
+                    "tier": agent.tier,
+                    "role": "reflection",
+                    "decision": {"insights": insights},
+                    "input_tokens": agent.last_input_tokens,
+                    "output_tokens": agent.last_output_tokens,
+                })
 
     # ------------------------------------------------------------------
     # Inventory carrying costs
@@ -530,6 +711,13 @@ class SupplyChainModel(Model):
                 "round_revenue": round(agent.round_revenue, 2),
                 "round_costs": round(agent.round_costs, 2),
                 "effective_quarterly_need": agent.effective_quarterly_need,
+                # Memory, reflection & planning data
+                "memories": agent.memory_stream.to_list()[-15:],  # last 15 memories
+                "reflections": agent.reflections,
+                "memory_count": len(agent.memory_stream.records),
+                "current_plan": agent.current_plan.to_dict() if agent.current_plan else None,
+                "signals_sent": [s.to_dict() for s in agent.signals_sent],
+                "signals_received": [s.to_dict() for s in agent.signals_received],
             }
 
         metrics = self._compute_metrics()
@@ -615,6 +803,10 @@ class SupplyChainModel(Model):
                 "round_revenue": round(agent.round_revenue, 2),
                 "round_costs": round(agent.round_costs, 2),
                 "effective_quarterly_need": agent.effective_quarterly_need,
+                # Memory & reflection data
+                "memories": agent.memory_stream.to_list()[-15:],
+                "reflections": agent.reflections,
+                "memory_count": len(agent.memory_stream.records),
             }
 
         return {
