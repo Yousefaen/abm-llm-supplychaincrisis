@@ -302,8 +302,12 @@ AGENT_SPECS: dict[str, AgentSpec] = {
 # JSON parsing helpers
 # ---------------------------------------------------------------------------
 
-def parse_llm_json(raw: str) -> dict | None:
-    """Resilient JSON extraction from LLM output."""
+def parse_llm_json(raw: str) -> dict | list | None:
+    """Resilient JSON extraction from LLM output.
+
+    Handles both JSON objects ({...}) and arrays ([...]) since reflections
+    return arrays while decisions return objects.
+    """
     cleaned = raw.strip()
     cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
     cleaned = re.sub(r"\n?```\s*$", "", cleaned).strip()
@@ -313,6 +317,7 @@ def parse_llm_json(raw: str) -> dict | None:
     except json.JSONDecodeError:
         pass
 
+    # Fallback: extract JSON object {...}
     m = re.search(r"\{[\s\S]*\}", cleaned)
     if m:
         try:
@@ -323,6 +328,19 @@ def parse_llm_json(raw: str) -> dict | None:
                 return json.loads(fixed)
             except json.JSONDecodeError:
                 pass
+
+    # Fallback: extract JSON array [...] (needed for reflections)
+    m = re.search(r"\[[\s\S]*\]", cleaned)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            fixed = re.sub(r",\s*([}\]])", r"\1", m.group(0))
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+
     return None
 
 
