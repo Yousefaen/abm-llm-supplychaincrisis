@@ -1,69 +1,85 @@
 SCENARIO_EVENTS: dict[int, str] = {
     1: (
-        "Q1 2020: COVID-19 hits. Automotive production drops 40%. OEMs are "
-        "canceling chip orders en masse to conserve cash. Consumer electronics "
-        "demand is surging as everyone works from home."
+        "Q1 2020: COVID-19 hits. Automotive production drops 40% (OICA data: "
+        "global output falls to 72% of 2019 baseline). OEMs cancel chip orders "
+        "to conserve cash. Meanwhile TSMC reports 87% utilization \u2014 consumer "
+        "electronics and data center demand is surging as everyone works from "
+        "home. Chip spot prices holding at 0.95x baseline."
     ),
     2: (
-        "Q2 2020: Lockdowns continue. Foundries have shifted capacity to "
-        "consumer electronics and hyperscale data centers, which pay higher "
-        "margins. Automotive orders are at historic lows. Some chip designers "
-        "are furloughing automotive teams."
+        "Q2 2020: Lockdowns deepen. Global auto production hits lowest point "
+        "since 2009 (55% of baseline). Foundries at 93% utilization, "
+        "reallocating wafer starts to consumer/data center (3x margin vs auto). "
+        "TSMC revenue rises 29% YoY despite automotive collapse. Lead times "
+        "extend to 14 weeks. Some chip designers furloughing automotive teams."
     ),
     3: (
-        "Q3 2020: Automotive demand starts recovering faster than anyone "
-        "expected. Chinese auto sales bounce back first. OEMs try to reinstate "
-        "canceled orders but find their slots have been given to consumer "
-        "electronics companies. Lead times are extending."
+        "Q3 2020: Automotive demand recovers faster than expected \u2014 China auto "
+        "sales back to 2019 levels, US/EU lagging (82% of baseline). OEMs try "
+        "to reinstate canceled orders but foundry slots are taken. Foundries "
+        "now at 96% utilization. Lead times jump to 17 weeks. Spot prices "
+        "start creeping up to 1.05x baseline."
     ),
     4: (
-        "Q4 2020: Full demand recovery in automotive. But foundry capacity is "
-        "fully allocated to other sectors. Lead times for automotive chips "
-        "stretch to 6+ months. First reports of OEMs halting production lines "
-        "due to chip shortages."
+        "Q4 2020: Full demand recovery (98% of baseline) but foundry capacity "
+        "at 99% utilization \u2014 effectively maxed out. Lead times stretch to 22 "
+        "weeks (5+ months). VW halts Wolfsburg production. Continental warns of "
+        "'severe semiconductor bottleneck'. Spot prices rise to 1.2x baseline. "
+        "First wave of panic ordering begins."
     ),
     5: (
-        "Q1 2021: CRISIS PEAK. Ford idles 7 plants. VW cuts production by "
-        "100,000 vehicles. Industry-wide losses projected at $110B. Governments "
-        "begin pressuring foundries. Double-ordering is rampant \u2014 buyers "
-        "ordering 2-3x what they need hoping to get half."
+        "Q1 2021: CRISIS PEAK. Foundries at 100% utilization \u2014 zero slack. "
+        "Ford idles 7 plants, GM cuts Silverado production, VW cuts 100K "
+        "vehicles. Industry losses projected at $110B. Double-ordering rampant "
+        "(true demand obscured by 30-40%). Texas winter storm knocks out "
+        "Samsung Austin fab for 6 weeks. Suez Canal blockage disrupts "
+        "shipments. Spot prices surge to 1.8x baseline. Lead times hit 26 weeks."
     ),
     6: (
-        "Q2 2021: Foundries announce capacity expansion plans but new fabs take "
-        "2-3 years to build. Price of automotive chips has risen 10-20%. OEMs "
-        "start exploring direct foundry relationships, angering Tier-1 "
-        "suppliers. Hoarding intensifies."
+        "Q2 2021: Foundries still at 100% utilization. TSMC raises automotive "
+        "chip prices 15-20%. Spot market prices hit 2.5x baseline (some MCUs "
+        "at 3x contract). Ford and GM announce direct foundry partnerships, "
+        "angering Tier-1 suppliers. EU announces European Chips Act framework. "
+        "Hoarding intensifies. Lead times still 26 weeks."
     ),
     7: (
-        "Q3 2021: A fire at a major Japanese chip plant (Renesas) removes 5% "
-        "of global automotive chip supply. The already-tight market tips into "
-        "panic. Some OEMs are paying 10x normal prices on the spot market. "
-        "Tier-1 suppliers are rationing."
+        "Q3 2021: Renesas Naka fab fire impact continues \u2014 removes ~5% of "
+        "global automotive chip supply. Toyota cuts global production 40% in "
+        "September. Spot prices peak at 3.2x baseline (some MCUs at 10x "
+        "contract). Bosch CEO calls it 'biggest crisis in auto industry'. "
+        "Foundry utilization 98% (slight easing). Lead times 26 weeks."
     ),
     8: (
-        "Q4 2021: Governments pass semiconductor subsidy bills (CHIPS Act "
-        "momentum). Foundries promise to increase automotive allocation. But "
-        "trust is broken \u2014 OEMs don\u2019t believe promises anymore. Inventory "
-        "hoarding hits record levels."
+        "Q4 2021: US CHIPS Act passes Senate ($52B in subsidies). TSMC "
+        "announces $12B Arizona fab, Samsung $17B Taylor TX fab \u2014 but won't "
+        "be operational until 2024. Spot prices ease slightly to 2.8x. "
+        "Foundry utilization 97%. Lead times start shortening to 24 weeks. "
+        "But trust is broken \u2014 OEMs don\u2019t believe promises. Inventory hoarding "
+        "hits record levels."
     ),
     9: (
-        "Q1 2022: Supply gradually improving but behavioral distortions persist. "
-        "Double-ordering means apparent demand is 30% higher than real demand. "
-        "Nobody knows what the true demand picture is. Some OEMs are sitting on "
-        "excess inventory they panic-ordered."
+        "Q1 2022: Supply gradually improving. Foundry utilization eases to 95%. "
+        "Spot prices decline to 2.2x baseline. Lead times shorten to 20 weeks. "
+        "But behavioral distortions persist \u2014 apparent demand 30% above real "
+        "demand from phantom orders. Some OEMs sitting on excess inventory. "
+        "Russia-Ukraine war creates new neon gas supply uncertainty (40% from "
+        "Ukraine). Nobody knows what true demand is."
     ),
     10: (
-        "Q2 2022: Market normalizing. But the bullwhip effect hits \u2014 companies "
-        "that over-ordered now have excess inventory and are canceling orders, "
-        "which causes a mini demand shock going the other direction. Trust "
-        "across the supply chain is at an all-time low."
+        "Q2 2022: CHIPS and Science Act signed into law. Bullwhip effect hits "
+        "hard \u2014 order cancellations cascade upstream. Consumer electronics "
+        "demand crashes; foundries scramble to fill automotive at 92% "
+        "utilization. Spot prices falling rapidly (1.6x baseline). Lead times "
+        "back to 16 weeks. Trust across supply chain at all-time low. Companies "
+        "that over-ordered have excess inventory; those that under-ordered "
+        "still face gaps."
     ),
 }
 
 TOTAL_ROUNDS = 10
 
 # ---------------------------------------------------------------------------
-# Mechanical effects — these override narrative-only scenario text with
+# Mechanical effects \u2014 these override narrative-only scenario text with
 # concrete parameter changes so the model and the story agree.
 # ---------------------------------------------------------------------------
 
@@ -74,7 +90,7 @@ DEMAND_MULTIPLIERS: dict[int, float] = {
     2: 0.50,   # Q2 2020: lockdowns deepen
     3: 0.80,   # Q3 2020: faster-than-expected recovery begins
     4: 1.10,   # Q4 2020: full recovery + pent-up demand
-    5: 1.25,   # Q1 2021: crisis peak — everyone trying to buy
+    5: 1.25,   # Q1 2021: crisis peak \u2014 everyone trying to buy
     6: 1.20,   # Q2 2021: still elevated, panic ordering
     7: 1.15,   # Q3 2021: Renesas fire adds urgency
     8: 1.10,   # Q4 2021: subsidy bills, slight cooling

@@ -14,8 +14,10 @@ from agents import (
     create_agent,
 )
 from debug_session import dbg_log
+from market_data import MarketEnvironment
 from memory import (
     generate_consequence_memory,
+    generate_market_intelligence_memory,
     generate_market_memory,
     generate_transaction_memory,
 )
@@ -38,6 +40,10 @@ class SupplyChainModel(Model):
         self.current_event: str = ""
         self.total_cost: float = 0.0
         self.status: str = "idle"
+
+        # Market environment — shared observable state for all agents
+        self.market_env = MarketEnvironment()
+        self.current_market_state = None
 
         # Lookup for agents by their string id
         self.agents_map: dict[str, SupplyChainAgent] = {}
@@ -120,7 +126,31 @@ class SupplyChainModel(Model):
             self._apply_scenario_effects(current_round)
 
             # ----------------------------------------------------------
-            # Phase 0: STRATEGIC PLANNING (Sonnet)
+            # Phase 0a: MARKET INTELLIGENCE — compute observable state
+            # All agents see the same aggregate data but interpret it
+            # through their tier-specific lens (Stanford emergence driver)
+            # ----------------------------------------------------------
+            self.current_market_state = self.market_env.compute_market_state(
+                current_round, self.agents_map,
+            )
+            for agent in self.agents_map.values():
+                agent.market_state = self.current_market_state
+
+            # Store market intelligence as a memory for all agents
+            brief = self.market_env.get_brief_summary(self.current_market_state)
+            intel_mem = generate_market_intelligence_memory(
+                round_num=current_round,
+                brief_summary=brief,
+                supply_crunch_severity=self.current_market_state.supply_crunch_severity,
+                bullwhip_risk=self.current_market_state.bullwhip_risk,
+                spot_price_index=self.current_market_state.chip_spot_price_index,
+                foundry_utilization_pct=self.current_market_state.foundry_utilization_pct,
+            )
+            for agent in self.agents_map.values():
+                agent.memory_stream.add(intel_mem)
+
+            # ----------------------------------------------------------
+            # Phase 0b: STRATEGIC PLANNING (Sonnet)
             # Create plans at round 1, refresh every 3 rounds,
             # emergency replan on shock events
             # ----------------------------------------------------------
@@ -134,7 +164,7 @@ class SupplyChainModel(Model):
                 agent.inventory_cost = 0.0
 
             # ----------------------------------------------------------
-            # Phase 0b: SIGNALING — agents send pre-decision messages
+            # Phase 0c: SIGNALING — agents send pre-decision messages
             # ----------------------------------------------------------
             self._run_signaling(current_round)
 
@@ -730,6 +760,7 @@ class SupplyChainModel(Model):
             "agents": agents_state,
             "decisions": self.round_decisions,
             "metrics": metrics,
+            "market_state": self.current_market_state.to_dict() if self.current_market_state else None,
             "total_cost": round(self.total_cost, 6),
         }
 
@@ -816,6 +847,7 @@ class SupplyChainModel(Model):
             "current_event": self.current_event,
             "agents": agents_state,
             "metrics": self._compute_metrics() if self.time > 0 else None,
+            "market_state": self.current_market_state.to_dict() if self.current_market_state else None,
             "total_cost": round(self.total_cost, 6),
             "scenario_name": "The Great Semiconductor Shortage",
             "temperature": self.temperature,

@@ -395,6 +395,42 @@ def generate_decision_memory(
     )
 
 
+def generate_market_intelligence_memory(
+    round_num: int,
+    brief_summary: str,
+    supply_crunch_severity: str,
+    bullwhip_risk: str,
+    spot_price_index: float,
+    foundry_utilization_pct: float,
+) -> MemoryRecord:
+    """Create a memory from observable aggregate market intelligence.
+
+    Distinct from market event memories — these represent what the agent
+    can observe about overall market conditions (like reading a Bloomberg
+    terminal), not just the narrative scenario text.
+    """
+    tags = ["market_intelligence"]
+    if supply_crunch_severity in ("severe", "crisis"):
+        tags.append("supply_crisis")
+    if bullwhip_risk in ("high", "extreme"):
+        tags.append("bullwhip_risk")
+    if spot_price_index > 2.0:
+        tags.append("price_spike")
+    if foundry_utilization_pct > 0.95:
+        tags.append("capacity_constrained")
+
+    # Higher importance when market conditions are extreme
+    is_shock = supply_crunch_severity in ("severe", "crisis") or bullwhip_risk == "extreme"
+
+    return MemoryRecord(
+        round=round_num,
+        category="market",
+        description=f"Market intelligence: {brief_summary}",
+        importance=score_importance("market", is_shock_event=is_shock),
+        tags=tags,
+    )
+
+
 def generate_partner_behavior_memory(
     round_num: int,
     observer_id: str,

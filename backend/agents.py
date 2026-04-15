@@ -11,6 +11,7 @@ import anthropic
 from mesa import Agent
 
 from debug_session import dbg_log
+from market_data import MarketEnvironment, MarketState
 from memory import (
     PLANNING_HORIZONS,
     AgentSignal,
@@ -382,6 +383,9 @@ class SupplyChainAgent(Agent):
         self.effective_quarterly_need: int = spec.quarterly_need
         self.effective_capacity: int = spec.initial_capacity
 
+        # Observable market state (set by model each round)
+        self.market_state: MarketState | None = None
+
         # Cost tracking
         self.last_input_tokens: int = 0
         self.last_output_tokens: int = 0
@@ -428,6 +432,20 @@ class SupplyChainAgent(Agent):
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
+    # Market intelligence — shared observable environment
+    # ------------------------------------------------------------------
+    def _format_market_intelligence(self) -> str:
+        """Format observable market state with tier-specific interpretation.
+
+        All agents see the same data, but the interpretation frame differs
+        by tier — this is the key driver of emergent divergent behavior.
+        """
+        if not self.market_state:
+            return ""
+        m: SupplyChainModel = self.model  # type: ignore[assignment]
+        return m.market_env.format_for_prompt(self.market_state, self.tier)
+
+    # ------------------------------------------------------------------
     # Reflection — higher-order reasoning via Sonnet
     # ------------------------------------------------------------------
     def reflect(self) -> list[str]:
@@ -447,6 +465,14 @@ class SupplyChainAgent(Agent):
             for m in recent
         )
 
+        # Include market intelligence for richer reflections
+        market_context = ""
+        if self.market_state:
+            m_env: SupplyChainModel = self.model  # type: ignore[assignment]
+            market_context = (
+                f"\nCURRENT MARKET: {m_env.market_env.get_brief_summary(self.market_state)}"
+            )
+
         system = (
             f"You are the strategic advisor for {self.agent_id} in a semiconductor "
             f"supply chain simulation.  Analyze these recent business memories and "
@@ -454,11 +480,13 @@ class SupplyChainAgent(Agent):
             f"1. Identify a PATTERN across multiple events (not just restate one event)\n"
             f"2. Draw a CONCLUSION about a partner, market trend, or your own strategy\n"
             f"3. Suggest an IMPLICATION for future decisions\n\n"
+            f"Consider both your bilateral relationships AND broader market conditions.\n"
             f"Be specific — name partners, cite numbers, reference rounds."
         )
 
         user = (
-            f"RECENT MEMORIES FOR {self.agent_id}:\n{memory_text}\n\n"
+            f"RECENT MEMORIES FOR {self.agent_id}:\n{memory_text}\n"
+            f"{market_context}\n\n"
             f"Generate 2-3 strategic insights as a JSON array of strings.\n"
             f'Example: ["Insight 1...", "Insight 2...", "Insight 3..."]\n'
             f"Respond with ONLY the JSON array."
@@ -547,6 +575,10 @@ class SupplyChainAgent(Agent):
             f"STRATEGIC INSIGHTS:\n{reflection_text}" if reflection_text else ""
         )
 
+        market_section = ""
+        if self.market_state:
+            market_section = f"\n{self._format_market_intelligence()}\n"
+
         user = (
             f"CURRENT STATE — Round {current_round}/{m.total_rounds}\n"
             f"- Inventory: {self.inventory} units\n"
@@ -554,6 +586,7 @@ class SupplyChainAgent(Agent):
             f"- Price: ${self.current_price}/unit\n"
             f"- Profit: ${self.revenue - self.costs:+.0f}\n"
             f"- Partners: {', '.join(partners)}\n\n"
+            f"{market_section}\n"
             f"{kpi_text}\n\n"
             f"RECENT MEMORIES:\n{memory_context}\n\n"
             f"{insights_section}\n"
@@ -604,15 +637,31 @@ class SupplyChainAgent(Agent):
 
         system = PERSONAS[self.agent_id]
 
+        # Include market intelligence so agents can relay observations
+        market_brief = ""
+        if self.market_state:
+            market_brief = (
+                f"\nMARKET CONDITIONS: Foundry utilization {self.market_state.foundry_utilization_pct:.0%}, "
+                f"spot prices {self.market_state.chip_spot_price_index:.1f}x baseline, "
+                f"lead times {self.market_state.lead_time_weeks:.0f}wk, "
+                f"sentiment: {self.market_state.market_sentiment}, "
+                f"supply crunch: {self.market_state.supply_crunch_severity}.\n"
+            )
+
         user = (
-            f"Round {current_round}/{m.total_rounds}. {m.current_event}\n\n"
+            f"Round {current_round}/{m.total_rounds}. {m.current_event}\n"
+            f"{market_brief}\n"
             f"Your inventory: {self.inventory}, fill rate: {self.fill_rate:.0%}, "
             f"profit: ${self.revenue - self.costs:+.0f}\n"
             f"Partners: {partner_list}\n"
             f"{plan_text}\n\n"
             f"Before making your main decision, you may send 0-2 signals to "
             f"your partners. Signals are short messages (1-2 sentences) that "
-            f"can be: price_warning, loyalty_pledge, threat, information, or request.\n\n"
+            f"can be: price_warning, loyalty_pledge, threat, information, or request.\n"
+            f"You can share market intelligence you've observed, warn about "
+            f"conditions you see developing, or relay information from other "
+            f"partners (like hearing that demand is shifting or competitors "
+            f"are changing strategy).\n\n"
             f"Respond with ONLY valid JSON:\n"
             f'{{"signals": [\n'
             f'  {{"recipient": "<partner name or null for broadcast>", '
@@ -895,8 +944,11 @@ class SupplierAgent(SupplyChainAgent):
         system = PERSONAS[self.agent_id]
         downstream = self.spec.downstream
         total_available = self.inventory + self.effective_capacity
+        market_intel = self._format_market_intelligence()
         user = f"""CURRENT SITUATION — Round {int(self.model.time) + 1}/{self.model.total_rounds}
 {event}
+
+{market_intel}
 
 YOUR STATUS:
 - Current inventory: {self.inventory} units
@@ -1011,8 +1063,11 @@ class BuyerAgent(SupplyChainAgent):
         system = PERSONAS[self.agent_id]
         upstream = self.spec.upstream
         price_ceil = self.current_price * 1.5 if self.current_price > 0 else 80
+        market_intel = self._format_market_intelligence()
         user = f"""CURRENT SITUATION — Round {int(self.model.time) + 1}/{self.model.total_rounds}
 {event}
+
+{market_intel}
 
 YOUR STATUS:
 - Current inventory on hand: {self.inventory} units
