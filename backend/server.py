@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from agents import get_recent_errors
 from debug_session import dbg_log
 from model import SupplyChainModel
 
@@ -232,6 +233,12 @@ async def get_state():
 async def get_history():
     model = _get_model()
     return model.get_history()
+
+
+@app.get("/api/debug/errors")
+async def get_debug_errors():
+    """Return recent LLM errors for diagnostics."""
+    return {"errors": get_recent_errors(), "count": len(get_recent_errors())}
 
 
 if __name__ == "__main__":

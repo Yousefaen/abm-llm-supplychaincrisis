@@ -46,6 +46,17 @@ _load_repo_env()
 # ---------------------------------------------------------------------------
 _client = anthropic.Anthropic()
 
+# ---------------------------------------------------------------------------
+# Error ring buffer — captures recent LLM errors for diagnostics
+# ---------------------------------------------------------------------------
+_recent_errors: list[dict[str, Any]] = []
+_MAX_ERRORS = 50
+
+
+def get_recent_errors() -> list[dict[str, Any]]:
+    """Return recent LLM errors for the /api/debug/errors endpoint."""
+    return list(_recent_errors)
+
 HAIKU_INPUT_COST_PER_M = 0.80   # $/1M input tokens
 HAIKU_OUTPUT_COST_PER_M = 4.00  # $/1M output tokens
 SONNET_INPUT_COST_PER_M = 3.00  # $/1M input tokens
@@ -545,6 +556,7 @@ class SupplyChainAgent(Agent):
             self.memory_stream.add(mem)
 
         self.reflections = insights
+        time.sleep(0.1)  # rate-limit protection
         return insights
 
     # ------------------------------------------------------------------
@@ -629,6 +641,7 @@ class SupplyChainAgent(Agent):
             risk_assessment=parsed.get("risk_assessment", "Unknown"),
         )
         self.current_plan = plan
+        time.sleep(0.1)  # rate-limit protection
         return plan
 
     def _format_plan(self) -> str:
@@ -710,6 +723,7 @@ class SupplyChainAgent(Agent):
             signals.append(sig)
 
         self.signals_sent = signals
+        time.sleep(0.1)  # rate-limit protection
         return signals
 
     def _format_received_signals(self) -> str:
@@ -889,6 +903,7 @@ class SupplyChainAgent(Agent):
     # ------------------------------------------------------------------
     def _call_llm(self, system: str, user: str, model: str = MODEL_HAIKU) -> dict[str, Any]:
         m: SupplyChainModel = self.model  # type: ignore[assignment]
+        current_round = int(m.time) + 1
         try:
             resp = _client.messages.create(
                 model=model,
@@ -921,27 +936,47 @@ class SupplyChainAgent(Agent):
                         "agent_id": self.agent_id,
                         "in_tok": self.last_input_tokens,
                         "out_tok": self.last_output_tokens,
-                        "parsed_keys": list(parsed.keys())[:12],
+                        "parsed_keys": list(parsed.keys())[:12] if isinstance(parsed, dict) else f"array[{len(parsed)}]",
                     },
                     "H3",
                 )
                 # endregion
                 return parsed
+            # Parse failed — capture raw output for diagnostics
+            _recent_errors.append({
+                "agent_id": self.agent_id,
+                "round": current_round,
+                "model": model,
+                "error_type": "parse_failed",
+                "raw_text": text[:500],
+                "text_len": len(text),
+            })
+            if len(_recent_errors) > _MAX_ERRORS:
+                _recent_errors.pop(0)
             # region agent log
             dbg_log(
                 "agents.py:_call_llm",
                 "llm_parse_empty",
-                {"agent_id": self.agent_id, "text_len": len(text)},
+                {"agent_id": self.agent_id, "text_len": len(text), "text_preview": text[:200]},
                 "H3",
             )
             # endregion
         except Exception as exc:
             print(f"[LLM ERROR] {self.agent_id}: {exc}")
+            _recent_errors.append({
+                "agent_id": self.agent_id,
+                "round": current_round,
+                "model": model,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+            })
+            if len(_recent_errors) > _MAX_ERRORS:
+                _recent_errors.pop(0)
             # region agent log
             dbg_log(
                 "agents.py:_call_llm",
                 "llm_exception",
-                {"agent_id": self.agent_id, "exc_type": type(exc).__name__},
+                {"agent_id": self.agent_id, "exc_type": type(exc).__name__, "exc_msg": str(exc)[:200]},
                 "H3",
             )
             # endregion
