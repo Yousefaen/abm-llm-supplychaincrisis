@@ -16,6 +16,7 @@ from agents import (
 from debug_session import dbg_log
 from market_data import MarketEnvironment
 from memory import (
+    generate_affect_memory,
     generate_consequence_memory,
     generate_market_intelligence_memory,
     generate_market_memory,
@@ -24,6 +25,7 @@ from memory import (
 from scenarios import (
     CAPACITY_SHOCKS,
     DEMAND_MULTIPLIERS,
+    EVENT_EMOTIONAL_VALENCE,
     INVENTORY_CARRYING_COST_PCT,
     SCENARIO_EVENTS,
     TOTAL_ROUNDS,
@@ -81,6 +83,8 @@ class SupplyChainModel(Model):
                 "capacity": lambda a: a.effective_capacity,
                 "current_price": lambda a: a.current_price,
                 "emotional_state": lambda a: a.emotional_state,
+                "affect": lambda a: a.affect.to_dict(),
+                "cognitive_load": lambda a: a.last_cognitive_load,
                 "fill_rate": lambda a: a.fill_rate,
                 "trust_scores": lambda a: dict(a.trust_scores),
                 "decision": lambda a: dict(a.current_decision) if a.current_decision else {},
@@ -222,6 +226,11 @@ class SupplyChainModel(Model):
             # endregion
 
             # ----------------------------------------------------------
+            # Phase 3.5: AFFECT UPDATE — realized outcomes shape emotions
+            # ----------------------------------------------------------
+            self._update_affect(current_round)
+
+            # ----------------------------------------------------------
             # Phase 4: MEMORY GENERATION — create memories from this round
             # ----------------------------------------------------------
             self._generate_round_memories(current_round)
@@ -295,6 +304,17 @@ class SupplyChainModel(Model):
             if agent.agent_id not in shocks:
                 agent.effective_capacity = agent.spec.initial_capacity
 
+        # ── Narrative -> affect: scenario event nudges everyone's mood ──
+        event_valence = EVENT_EMOTIONAL_VALENCE.get(current_round, {})
+        if event_valence:
+            for agent in self.agents_map.values():
+                agent.affect.update_from_event_valence(
+                    fear=event_valence.get("fear", 0.0),
+                    greed=event_valence.get("greed", 0.0),
+                    stress=event_valence.get("stress", 0.0),
+                    morale=event_valence.get("morale", 0.0),
+                )
+
     # ------------------------------------------------------------------
     # Signaling — pre-decision communication between agents
     # ------------------------------------------------------------------
@@ -320,20 +340,36 @@ class SupplyChainModel(Model):
                     "output_tokens": agent.last_output_tokens,
                 })
 
-        # Route signals to recipients
+        # Route signals to recipients AND propagate affective contagion:
+        # receivers drift toward the sender's emotional tone, weighted by how
+        # much they trust the sender.
+        def _alpha(receiver: SupplyChainAgent, sender_id: str) -> float:
+            # Trust 1..10 -> 0.02..0.20 coupling strength
+            trust = receiver.trust_scores.get(sender_id, 5.0)
+            return max(0.02, min(0.20, 0.02 * trust))
+
         for signal in all_signals:
             if signal.recipient is None:
-                # Broadcast: deliver to all partners
                 sender = self.agents_map.get(signal.sender)
                 if sender:
                     for pid in sender.spec.upstream + sender.spec.downstream:
                         partner = self.agents_map.get(pid)
                         if partner:
                             partner.signals_received.append(signal)
+                            partner.affect.update_from_signal(
+                                sender_valence=signal.affect_valence,
+                                sender_arousal=signal.affect_arousal,
+                                alpha=_alpha(partner, signal.sender),
+                            )
             else:
                 recipient = self.agents_map.get(signal.recipient)
                 if recipient:
                     recipient.signals_received.append(signal)
+                    recipient.affect.update_from_signal(
+                        sender_valence=signal.affect_valence,
+                        sender_arousal=signal.affect_arousal,
+                        alpha=_alpha(recipient, signal.sender),
+                    )
 
     # ------------------------------------------------------------------
     # Strategic planning — create/refresh/invalidate multi-quarter plans
@@ -374,6 +410,111 @@ class SupplyChainModel(Model):
                         "input_tokens": agent.last_input_tokens,
                         "output_tokens": agent.last_output_tokens,
                     })
+
+    # ------------------------------------------------------------------
+    # Affect update — realized outcomes shape emotions, then decay
+    # ------------------------------------------------------------------
+    def _update_affect(self, current_round: int) -> None:
+        """Update every agent's AffectState from this round's realized
+        outcomes and partner behavior, then decay and accumulate fatigue.
+
+        Also writes an ``affect_change`` memory when the agent's dominant
+        emotion has flipped to a strong state.
+        """
+        for agent in self.agents_map.values():
+            pre_dominant = agent.affect.dominant_emotion()
+            pre_intensity = self._dominant_intensity(agent.affect)
+
+            partner_fills: dict[str, float] = {}
+            partner_hoarding: dict[str, int] = {}
+            partner_seeking: dict[str, bool] = {}
+
+            # For buyers: partner fills come from supplier_performance
+            perf = agent.last_consequences.get("supplier_performance") or {}
+            for sid, info in perf.items():
+                ordered = info.get("ordered", 0)
+                received = info.get("received", 0)
+                if ordered > 0:
+                    partner_fills[sid] = received / ordered
+                else:
+                    partner_fills[sid] = 1.0
+                supplier_agent = self.agents_map.get(sid)
+                if supplier_agent is not None:
+                    held = int(supplier_agent.current_decision.get("held_in_reserve", 0) or 0)
+                    partner_hoarding[sid] = held
+
+            # For suppliers: "customer seeking alternatives" is a betrayal
+            cons = agent.last_consequences.get("customer_fill_rates") or {}
+            for bid in cons:
+                buyer = self.agents_map.get(bid)
+                if buyer is not None:
+                    seek = bool(buyer.current_decision.get("will_seek_alternatives", False))
+                    if seek:
+                        partner_seeking[bid] = True
+
+            profit = agent.last_consequences.get("profit_this_round")
+            agent.affect.update_from_outcome(
+                fill_rate=agent.fill_rate if agent.tier != "foundry" else None,
+                profit=profit,
+                partner_fills=partner_fills or None,
+                partner_hoarding=partner_hoarding or None,
+                partner_seeking_alternatives=partner_seeking or None,
+            )
+
+            # Fatigue accumulates with stress, then we decay transient emotions.
+            agent.affect.accumulate_fatigue()
+            agent.affect.decay()
+
+            # Record an affect_change memory when the dominant emotion is
+            # strong and has shifted meaningfully from the previous round.
+            post_dominant = agent.affect.dominant_emotion()
+            post_intensity = self._dominant_intensity(agent.affect)
+            if post_intensity >= 0.45 and (
+                post_dominant != pre_dominant or post_intensity - pre_intensity >= 0.2
+            ):
+                # Pick a trigger description
+                trigger = self._affect_trigger_text(
+                    agent, partner_fills, partner_seeking
+                )
+                agent.memory_stream.add(
+                    generate_affect_memory(
+                        round_num=current_round,
+                        agent_id=agent.agent_id,
+                        dominant_emotion=post_dominant,
+                        trigger=trigger,
+                        involved_agents=list(partner_fills.keys())
+                        + list(partner_seeking.keys()),
+                        intensity=post_intensity,
+                    )
+                )
+
+    @staticmethod
+    def _dominant_intensity(affect) -> float:
+        emos = [
+            affect.fear, affect.anger, affect.trust_joy,
+            affect.pride, affect.shame, affect.greed,
+        ]
+        return max(emos) if emos else 0.0
+
+    @staticmethod
+    def _affect_trigger_text(
+        agent: "SupplyChainAgent",
+        partner_fills: dict[str, float],
+        partner_seeking: dict[str, bool],
+    ) -> str:
+        bad_fills = sorted(
+            ((pid, f) for pid, f in partner_fills.items() if f < 0.7),
+            key=lambda kv: kv[1],
+        )
+        if bad_fills:
+            pid, f = bad_fills[0]
+            return f"low fill rate from {pid} ({f:.0%})"
+        if partner_seeking:
+            pid = next(iter(partner_seeking))
+            return f"{pid} is seeking alternative suppliers"
+        if agent.fill_rate < 0.7:
+            return f"overall fill rate low ({agent.fill_rate:.0%})"
+        return "cumulative pressure this round"
 
     # ------------------------------------------------------------------
     # Memory generation — create memories from resolution outcomes
@@ -506,7 +647,13 @@ class SupplyChainModel(Model):
             for buyer in buyers:
                 buyer_orders = buyer.current_decision.get("orders", {})
                 amount_ordered = int(buyer_orders.get(supplier.agent_id, 0))
-                max_price = float(buyer.current_decision.get("max_price_willing_to_pay", 0))
+                # Grudge penalties surface as a per-supplier ceiling (set by
+                # the buyer step); fall back to the global ceiling.
+                per_sup = buyer.current_decision.get("max_price_per_supplier") or {}
+                max_price = float(
+                    per_sup.get(supplier.agent_id,
+                                buyer.current_decision.get("max_price_willing_to_pay", 0))
+                )
                 if amount_ordered > 0:
                     buyer_demands[buyer.agent_id] = amount_ordered
                     buyer_max_prices[buyer.agent_id] = max_price
@@ -527,8 +674,14 @@ class SupplyChainModel(Model):
                     # Trust factor: supplier's trust in this buyer (1-10 → 0.1-1.0)
                     trust = supplier.trust_scores.get(bid, 5.0)
                     trust_factor = trust / 10.0
-                    # Combined score — price matters more than trust
-                    scores[bid] = price_factor * 0.6 + trust_factor * 0.4
+                    # Emotional factor: grudges + anger punish; trust_joy helps
+                    emo_factor = supplier.affect.allocation_emotional_factor(bid)
+                    # Combined score — price leads, trust and affect each matter
+                    scores[bid] = (
+                        price_factor * 0.5
+                        + trust_factor * 0.3
+                        + emo_factor * 0.2
+                    )
 
                 # Sort buyers by score (highest priority first)
                 sorted_buyers = sorted(scores.keys(), key=lambda b: scores[b], reverse=True)
@@ -730,6 +883,8 @@ class SupplyChainModel(Model):
                 "capacity": agent.effective_capacity,
                 "current_price": agent.current_price,
                 "emotional_state": agent.emotional_state,
+                "affect": agent.affect.to_dict(),
+                "cognitive_load": agent.last_cognitive_load,
                 "fill_rate": agent.fill_rate,
                 "trust_scores": dict(agent.trust_scores),
                 "current_decision": dict(agent.current_decision) if agent.current_decision else None,
@@ -823,6 +978,8 @@ class SupplyChainModel(Model):
                 "capacity": agent.effective_capacity,
                 "current_price": agent.current_price,
                 "emotional_state": agent.emotional_state,
+                "affect": agent.affect.to_dict(),
+                "cognitive_load": agent.last_cognitive_load,
                 "fill_rate": agent.fill_rate,
                 "trust_scores": dict(agent.trust_scores),
                 "current_decision": dict(agent.current_decision) if agent.current_decision else None,
@@ -872,6 +1029,8 @@ class SupplyChainModel(Model):
                             "inventory": arow.get("inventory", 0),
                             "current_price": arow.get("current_price", 0),
                             "emotional_state": arow.get("emotional_state", ""),
+                            "affect": arow.get("affect", {}),
+                            "cognitive_load": arow.get("cognitive_load", 0.0),
                             "fill_rate": arow.get("fill_rate", 1.0),
                             "trust_scores": arow.get("trust_scores", {}),
                             "decision": arow.get("decision", {}),

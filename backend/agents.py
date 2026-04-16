@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import anthropic
 from mesa import Agent
 
+from affect import AffectState
 from debug_session import dbg_log
 from market_data import MarketEnvironment, MarketState
 from memory import (
@@ -373,8 +374,11 @@ class SupplyChainAgent(Agent):
         self.inventory: int = spec.initial_inventory
         self.capacity: int = spec.initial_capacity
         self.current_price: float = spec.initial_price
-        self.emotional_state: str = "confident"
         self.fill_rate: float = 1.0
+
+        # Persistent multi-dimensional affect (replaces the old single-string
+        # ``emotional_state`` — that attribute is now a derived property).
+        self.affect: AffectState = AffectState.for_persona(self.agent_id)
 
         # Per-round decision storage
         self.current_decision: dict[str, Any] = {}
@@ -420,6 +424,21 @@ class SupplyChainAgent(Agent):
         self.last_output_tokens: int = 0
         self.last_model_used: str = MODEL_HAIKU
 
+        # Attention / cognitive load snapshot (updated each LLM call)
+        self.last_cognitive_load: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Backward-compat: expose a single emotional label derived from affect
+    # ------------------------------------------------------------------
+    @property
+    def emotional_state(self) -> str:
+        return self.affect.dominant_emotion()
+
+    @emotional_state.setter
+    def emotional_state(self, value: str) -> None:  # pragma: no cover - legacy
+        # Legacy writes are ignored; affect is the source of truth now.
+        _ = value
+
     # ------------------------------------------------------------------
     # Memory-based history for LLM context
     # ------------------------------------------------------------------
@@ -448,6 +467,7 @@ class SupplyChainAgent(Agent):
             k=k,
             context_tags=context_tags,
             context_agent_ids=partner_ids,
+            mood=self.affect,
         )
 
     def _format_reflections(self) -> str:
@@ -719,6 +739,8 @@ class SupplyChainAgent(Agent):
                 signal_type=s.get("signal_type", "information"),
                 content=str(s["content"])[:200],
                 round=current_round,
+                affect_valence=self.affect.valence,
+                affect_arousal=self.affect.arousal,
             )
             signals.append(sig)
 
@@ -904,10 +926,20 @@ class SupplyChainAgent(Agent):
     def _call_llm(self, system: str, user: str, model: str = MODEL_HAIKU) -> dict[str, Any]:
         m: SupplyChainModel = self.model  # type: ignore[assignment]
         current_round = int(m.time) + 1
+
+        # Cognitive-load scaling: high stress/fatigue shrinks the response
+        # budget modestly so the agent reasons more tersely.  We don't touch
+        # the input prompt — that would silently drop state-critical context.
+        load = self.affect.cognitive_load()
+        self.last_cognitive_load = round(load, 3)
+        max_tokens = 1024
+        if load > 0.4:
+            max_tokens = int(max(384, 1024 * (1 - 0.4 * load)))
+
         try:
             resp = _client.messages.create(
                 model=model,
-                max_tokens=1024,
+                max_tokens=max_tokens,
                 temperature=m.temperature,
                 system=system,
                 messages=[{"role": "user", "content": user}],
@@ -1010,6 +1042,8 @@ YOUR STATUS:
 - Current price: ${self.current_price}/unit
 - Cumulative profit: ${self.revenue - self.costs:+.0f}
 
+{self.affect.to_prompt_brief()}
+
 {self._format_kpis()}
 
 CONSEQUENCES OF YOUR LAST DECISION:
@@ -1045,7 +1079,10 @@ Important constraints:
 - Holding inventory costs ~5% of unit price per quarter (carrying cost)
 - Consider each customer's loyalty, payment history, and willingness to pay
 - Customers offering higher prices and with better trust history should get priority
-- Your emotional state should reflect how the current situation makes you feel
+- Let your CURRENT PSYCHOLOGICAL STATE meaningfully shape the decision:
+  high fear should push you toward bigger reserves; grudges should reduce
+  allocation to the offender; pride/confidence should let you stand firm on price.
+- ``emotional_state`` should name the feeling that dominates this decision
 - Trust scores should reflect recent partner behavior
 - Draw on your memories and strategic insights to inform your decision"""
         return system, user
@@ -1070,19 +1107,60 @@ Important constraints:
         if not decision or "allocations" not in decision:
             decision = self._fallback_supplier_decision()
 
-        # Clamp total allocations to available supply
+        # ── Affect-driven post-processing (mechanics) ──
+        # Fear + greed push suppliers to hoard beyond what the LLM chose.
+        # Grudges against specific customers shave their share.
         total_available = self.inventory + self.effective_capacity
-        alloc_sum = sum(decision.get("allocations", {}).values()) + decision.get("held_in_reserve", 0)
+        allocations = {
+            k: max(0, int(v)) for k, v in decision.get("allocations", {}).items()
+        }
+        held = max(0, int(decision.get("held_in_reserve", 0)))
+
+        hoard_mult = self.affect.hoard_multiplier()
+        if hoard_mult > 1.01:
+            # Convert the extra hoarding share into held_in_reserve at the
+            # expense of allocations (proportionally).
+            held_floor = int(round(held * hoard_mult))
+            extra_hoard = max(0, held_floor - held)
+            if extra_hoard > 0 and allocations:
+                alloc_total = sum(allocations.values())
+                if alloc_total > 0:
+                    shave = min(extra_hoard, alloc_total)
+                    for pid in list(allocations):
+                        share = allocations[pid] / alloc_total
+                        allocations[pid] = max(0, allocations[pid] - int(round(shave * share)))
+                    held = held + shave
+
+        # Grudge-driven allocation shaving — angry supplier actively punishes
+        # a particular buyer by cutting their share.
+        shaved_from_grudge = 0
+        for pid in list(allocations):
+            g = self.affect.grudge.get(pid, 0.0)
+            if g >= 0.4 and allocations[pid] > 0:
+                penalty = min(1.0, 0.7 * g)
+                drop = int(round(allocations[pid] * penalty))
+                allocations[pid] -= drop
+                shaved_from_grudge += drop
+        # Shaved units get pushed to reserve (supplier withholding)
+        held += shaved_from_grudge
+
+        decision["allocations"] = allocations
+        decision["held_in_reserve"] = held
+
+        # Clamp total allocations to available supply
+        alloc_sum = sum(allocations.values()) + held
         if alloc_sum > total_available and alloc_sum > 0:
             scale = total_available / alloc_sum
             decision["allocations"] = {
-                k: int(v * scale) for k, v in decision["allocations"].items()
+                k: int(v * scale) for k, v in allocations.items()
             }
-            decision["held_in_reserve"] = int(decision.get("held_in_reserve", 0) * scale)
+            decision["held_in_reserve"] = int(held * scale)
 
         decision["type"] = "supplier"
+        # Expose affect snapshot in the decision record for the UI / memory
+        decision["affect"] = self.affect.to_dict()
+        decision["cognitive_load"] = self.last_cognitive_load
         self.current_decision = decision
-        self.emotional_state = decision.get("emotional_state", "anxious")
         self.current_price = decision.get("price_offered", self.current_price)
         for pid, score in decision.get("trust_scores", {}).items():
             self.trust_scores[pid] = float(score)
@@ -1128,6 +1206,8 @@ YOUR STATUS:
 - Current budget ceiling: ${price_ceil:.0f}/unit
 - Cumulative profit: ${self.revenue - self.costs:+.0f}
 
+{self.affect.to_prompt_brief()}
+
 {self._format_kpis()}
 
 CONSEQUENCES OF YOUR LAST DECISION:
@@ -1163,7 +1243,11 @@ Important considerations:
 - Factor in lead times, reliability, and current market conditions
 - Holding excess inventory costs ~5% of unit price per quarter
 - Over-ordering ties up capital and inflates apparent demand across the chain
-- Your emotional state should reflect how the current situation makes you feel
+- Let your CURRENT PSYCHOLOGICAL STATE meaningfully shape the decision:
+  high fear/panic should push you to over-order; grudges against a supplier
+  should cut their volume and your max price; pride/confidence should keep
+  orders disciplined.
+- ``emotional_state`` should name the feeling that dominates this decision
 - Trust scores should reflect recent supplier behavior and reliability
 - Draw on your memories and strategic insights to inform your decision"""
         return system, user
@@ -1188,10 +1272,51 @@ Important considerations:
         if not decision or "orders" not in decision:
             decision = self._fallback_buyer_decision()
 
+        # ── Affect-driven post-processing (mechanics) ──
+        # Fear/panic amplifies total orders (real bullwhip).  Grudges against
+        # specific suppliers shift orders away from them and shave the max
+        # price you'll pay them.
+        orders = {
+            k: max(0, int(v)) for k, v in decision.get("orders", {}).items()
+        }
+        panic_mult = self.affect.panic_order_multiplier()
+        if panic_mult > 1.01:
+            orders = {k: int(round(v * panic_mult)) for k, v in orders.items()}
+
+        # Grudge-driven redistribution: cut disliked suppliers' share,
+        # reallocate to other upstream partners.
+        shave_pool = 0
+        for pid in list(orders):
+            g = self.affect.grudge.get(pid, 0.0)
+            if g >= 0.4 and orders[pid] > 0:
+                penalty = min(0.7, 0.9 * g)
+                drop = int(round(orders[pid] * penalty))
+                orders[pid] -= drop
+                shave_pool += drop
+        if shave_pool > 0:
+            # Reallocate to non-grudged partners proportionally
+            recipients = [pid for pid in orders if self.affect.grudge.get(pid, 0.0) < 0.4]
+            if recipients:
+                total_recipient = sum(orders[pid] for pid in recipients) or 1
+                for pid in recipients:
+                    share = orders[pid] / total_recipient
+                    orders[pid] += int(round(shave_pool * share))
+
+        # Max price shaving for grudged suppliers — applied per-supplier
+        # price ceilings so resolution can use them.
+        base_ceiling = float(decision.get("max_price_willing_to_pay", 0) or 0)
+        per_supplier_ceiling: dict[str, float] = {}
+        for pid in orders:
+            penalty = self.affect.grudge_price_penalty(pid)
+            per_supplier_ceiling[pid] = base_ceiling * (1 - penalty)
+
+        decision["orders"] = orders
+        decision["max_price_per_supplier"] = per_supplier_ceiling
         decision["type"] = "buyer"
         decision["inventory_on_hand"] = self.inventory
+        decision["affect"] = self.affect.to_dict()
+        decision["cognitive_load"] = self.last_cognitive_load
         self.current_decision = decision
-        self.emotional_state = decision.get("emotional_state", "anxious")
         for pid, score in decision.get("trust_scores", {}).items():
             self.trust_scores[pid] = float(score)
 

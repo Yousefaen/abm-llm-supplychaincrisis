@@ -111,6 +111,28 @@ CAPACITY_SHOCKS: dict[int, dict[str, float]] = {
 INVENTORY_CARRYING_COST_PCT = 0.05  # 5% of unit price per quarter
 
 
+# ---------------------------------------------------------------------------
+# Emotional valence of each scenario event.  Applied to ALL agents before
+# decisions in that round — captures the mood-shaping effect of a narrative
+# shock (e.g. "CRISIS PEAK" bumps fear/stress globally).
+#
+# Deltas are typically in [-0.5, 0.5].  ``fear``, ``greed``, ``stress``,
+# ``morale`` keys are read; missing keys default to 0.
+# ---------------------------------------------------------------------------
+EVENT_EMOTIONAL_VALENCE: dict[int, dict[str, float]] = {
+    1:  {"fear": 0.10, "stress": 0.15, "morale": -0.05},   # COVID hits
+    2:  {"fear": 0.15, "stress": 0.20, "morale": -0.10},   # lockdowns deepen
+    3:  {"greed": 0.10, "stress": 0.10},                   # recovery surprise
+    4:  {"fear": 0.20, "stress": 0.25, "greed": 0.15, "morale": -0.10},  # maxed capacity
+    5:  {"fear": 0.35, "stress": 0.35, "greed": 0.20, "morale": -0.20},  # CRISIS PEAK
+    6:  {"fear": 0.25, "stress": 0.25, "greed": 0.25, "morale": -0.10},  # hoarding
+    7:  {"fear": 0.30, "stress": 0.30, "morale": -0.15},                 # Renesas fire
+    8:  {"fear": 0.15, "stress": 0.20, "morale": -0.05},                 # CHIPS Act
+    9:  {"fear": 0.10, "stress": 0.10, "morale": 0.05},                  # easing
+    10: {"fear": 0.05, "stress": 0.15, "morale": -0.05},                 # bullwhip snap-back
+}
+
+
 def get_event_title(round_num: int) -> str:
     event = SCENARIO_EVENTS.get(round_num, "")
     colon_idx = event.find(":")

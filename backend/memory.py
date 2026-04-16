@@ -10,8 +10,12 @@ required (tag-based relevance is sufficient for 9 agents over 10 rounds).
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from affect import AffectState
 
 
 # ---------------------------------------------------------------------------
@@ -144,12 +148,16 @@ class MemoryStream:
         k: int = 10,
         context_tags: list[str] | None = None,
         context_agent_ids: list[str] | None = None,
+        mood: "AffectState | None" = None,
     ) -> list[MemoryRecord]:
         """Return the top-k memories ranked by recency + importance + relevance.
 
-        Weights: recency 0.3, importance 0.35, relevance 0.35
-        This gives slight edge to *what matters* and *what's relevant* over
-        raw recency, while still ensuring very recent memories surface.
+        Base weights: recency 0.3, importance 0.35, relevance 0.35.
+
+        When ``mood`` is provided, scoring is nudged toward **mood-congruent**
+        memories (fearful/angry agents surface more negative memories, happy
+        agents surface more positive ones) and ``fatigue`` adds gaussian noise
+        + trims the retrieval budget to model limited cognitive bandwidth.
         """
         if not self.records:
             return []
@@ -158,6 +166,32 @@ class MemoryStream:
         context_agent_ids = context_agent_ids or []
         tag_set = set(context_tags)
         aid_set = set(context_agent_ids)
+
+        # Fatigue-driven k trim & noise
+        effective_k = k
+        noise_sd = 0.0
+        if mood is not None:
+            load = mood.cognitive_load()
+            if load > 0.3:
+                effective_k = max(3, int(round(k * (1 - 0.4 * load))))
+                noise_sd = 0.08 * load
+
+        # Mood-driven bias toward negative vs positive memories.
+        negative_tags = {
+            "severe_shortage", "partial_shortage", "loss", "trust_break",
+            "hoarding", "seeking_alternatives", "supply_crisis",
+            "feeling_panicked", "feeling_angry", "feeling_anxious",
+            "feeling_vindictive", "cancellation", "disruption",
+        }
+        positive_tags = {
+            "reliable_delivery", "feeling_loyal", "feeling_confident",
+            "loyalty_pledge",
+        }
+        neg_weight = 0.0
+        pos_weight = 0.0
+        if mood is not None:
+            neg_weight = 0.35 * mood.fear + 0.25 * mood.anger
+            pos_weight = 0.25 * mood.trust_joy + 0.15 * mood.pride
 
         scored: list[tuple[float, int, MemoryRecord]] = []
 
@@ -186,10 +220,23 @@ class MemoryStream:
                 relevance = max(relevance, aid_score)
 
             score = recency * 0.30 + importance * 0.35 + relevance * 0.35
+
+            # --- Mood-congruent bias ---
+            if neg_weight > 0 or pos_weight > 0:
+                rec_tags = set(rec.tags)
+                if rec_tags & negative_tags:
+                    score += neg_weight
+                if rec_tags & positive_tags:
+                    score += pos_weight
+
+            # --- Fatigue noise ---
+            if noise_sd > 0:
+                score += random.gauss(0.0, noise_sd)
+
             scored.append((score, idx, rec))
 
         scored.sort(key=lambda t: t[0], reverse=True)
-        return [rec for _, _, rec in scored[:k]]
+        return [rec for _, _, rec in scored[:effective_k]]
 
     def get_recent(self, n: int = 20) -> list[MemoryRecord]:
         """Return the N most recent memories (for reflection input)."""
@@ -204,9 +251,12 @@ class MemoryStream:
         k: int = 10,
         context_tags: list[str] | None = None,
         context_agent_ids: list[str] | None = None,
+        mood: "AffectState | None" = None,
     ) -> str:
         """Retrieve top-k memories and format them as a prompt section."""
-        memories = self.retrieve(current_round, k, context_tags, context_agent_ids)
+        memories = self.retrieve(
+            current_round, k, context_tags, context_agent_ids, mood=mood,
+        )
         if not memories:
             return "No memories yet. This is the start of the simulation."
 
@@ -485,6 +535,38 @@ def generate_partner_behavior_memory(
     )
 
 
+def generate_affect_memory(
+    round_num: int,
+    agent_id: str,
+    dominant_emotion: str,
+    trigger: str,
+    involved_agents: list[str] | None = None,
+    intensity: float = 0.5,
+) -> MemoryRecord:
+    """Create a memory entry for a notable shift in affective state.
+
+    Emitted when an agent's dominant emotion crosses a salience threshold so
+    the agent can later remember "I panicked in Q3 after KoreaSilicon
+    starved us" alongside the transactional record.
+    """
+    desc = (
+        f"I felt {dominant_emotion} (intensity {intensity:.2f}). "
+        f"Trigger: {trigger}"
+    )
+    tags = ["affect_change", f"feeling_{dominant_emotion}"]
+    if intensity >= 0.7:
+        tags.append("strong_feeling")
+    importance = 5 + int(round(min(intensity, 1.0) * 4))
+    return MemoryRecord(
+        round=round_num,
+        category="own_decision",
+        description=desc,
+        importance=importance,
+        tags=tags,
+        agent_ids_involved=involved_agents or [],
+    )
+
+
 def generate_reflection_memory(
     round_num: int,
     insight: str,
@@ -572,6 +654,10 @@ class AgentSignal:
                                     # | information | request
     content: str                    # 1-2 sentences, natural language
     round: int
+    # Affective payload — used by the receiver for emotional contagion.
+    # Captured at emission time from the sender's AffectState.
+    affect_valence: float = 0.0     # -1..1
+    affect_arousal: float = 0.3     # 0..1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -580,4 +666,6 @@ class AgentSignal:
             "signal_type": self.signal_type,
             "content": self.content,
             "round": self.round,
+            "affect_valence": round(self.affect_valence, 3),
+            "affect_arousal": round(self.affect_arousal, 3),
         }
