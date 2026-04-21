@@ -1,83 +1,120 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSimulation } from "./lib/useSimulation";
-import SimulationControls from "./components/SimulationControls";
+import TopBar from "./components/TopBar";
+import Scrubber from "./components/Scrubber";
 import SupplyChainGraph from "./components/SupplyChainGraph";
-import AgentCard from "./components/AgentCard";
-import MetricsDashboard from "./components/MetricsDashboard";
-import EventLog from "./components/EventLog";
-import RoundTimeline from "./components/RoundTimeline";
+import Ticker from "./components/Ticker";
+import InspectPanel from "./components/InspectPanel";
 
 export default function Home() {
   const { state, reset, step, fetchState, autoPlay, pause } = useSimulation();
+
+  // Inspect selection. When set, we are in Inspect mode; otherwise Live.
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+
+  // Scrubbing: when the user clicks a past round, we "freeze" the focus
+  // to that round. Phase 3 skeleton displays the focus indicator; actual
+  // historical-state rendering comes with Phase 4 history wiring.
+  const [focusedRound, setFocusedRound] = useState<number | null>(null);
 
   useEffect(() => {
     fetchState();
   }, [fetchState]);
 
+  // RTS-style keyboard: space to toggle play/pause, Esc to return to live,
+  // arrow keys to step. We guard against typing targets so the shortcuts
+  // never fight a real input.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        if (state.status === "running") {
+          pause();
+        } else if (state.status !== "complete") {
+          autoPlay();
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        if (selectedAgent) {
+          setSelectedAgent(null);
+        } else if (focusedRound !== null) {
+          setFocusedRound(null);
+        }
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        if (state.status !== "running" && state.status !== "complete") {
+          step();
+        }
+        return;
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [state.status, selectedAgent, focusedRound, pause, autoPlay, step]);
+
+  const handleSelectAgent = useCallback((agentId: string | null) => {
+    setSelectedAgent(agentId);
+  }, []);
+
   const agentData = selectedAgent ? state.agents[selectedAgent] : null;
 
   return (
-    <main className="flex flex-col h-screen overflow-hidden">
-      {/* Top controls bar */}
-      <div className="shrink-0 p-3 border-b border-border">
-        <SimulationControls
-          state={state}
-          onStep={step}
-          onAutoPlay={autoPlay}
-          onPause={pause}
-          onReset={reset}
-        />
-      </div>
+    <main className="flex flex-col h-screen overflow-hidden bg-background">
+      <TopBar
+        state={state}
+        onStep={step}
+        onAutoPlay={autoPlay}
+        onPause={pause}
+        onReset={reset}
+      />
 
-      {/* Round timeline */}
-      <div className="shrink-0 px-3 pt-2">
-        <RoundTimeline
-          currentRound={state.currentRound}
-          totalRounds={state.totalRounds}
-          history={state.history}
-        />
-      </div>
-
-      {/* Main content area */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-3 p-3 min-h-0">
-        {/* Left: Supply chain graph */}
-        <div className="lg:col-span-2 rounded-lg border border-border bg-card overflow-hidden">
-          <SupplyChainGraph
-            agents={state.agents}
-            onSelectAgent={setSelectedAgent}
-            selectedAgent={selectedAgent}
-            thinkingAgent={state.thinkingAgent}
-          />
-        </div>
-
-        {/* Right: Agent detail panel */}
-        <div className="rounded-lg border border-border bg-card overflow-auto">
-          {agentData ? (
-            <AgentCard agent={agentData} />
-          ) : (
-            <div className="flex items-center justify-center h-full text-muted-foreground text-sm p-6">
-              Click an agent node to view details
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Bottom: Metrics + Activity Feed */}
-      <div className="shrink-0 grid grid-cols-1 lg:grid-cols-2 gap-3 px-3 pb-3 max-h-[45vh]">
-        <div className="rounded-lg border border-border bg-card overflow-auto">
-          <MetricsDashboard history={state.history} agents={state.agents} />
-        </div>
-        <div className="rounded-lg border border-border bg-card overflow-hidden">
-          <EventLog
-            history={state.history}
-            agents={state.agents}
+      {/* Hero area — Live canvas or Inspect document, never both at once */}
+      <div className="flex-1 min-h-0 relative">
+        {agentData ? (
+          <InspectPanel
+            agent={agentData}
             currentRound={state.currentRound}
+            onClose={() => setSelectedAgent(null)}
           />
-        </div>
+        ) : (
+          <div className="relative h-full">
+            <SupplyChainGraph
+              agents={state.agents}
+              onSelectAgent={handleSelectAgent}
+              selectedAgent={selectedAgent}
+              thinkingAgent={state.thinkingAgent}
+            />
+            <Ticker
+              history={state.history}
+              currentEvent={state.currentEvent}
+              thinkingAgent={state.thinkingAgent}
+              agents={state.agents}
+            />
+          </div>
+        )}
       </div>
+
+      <Scrubber
+        currentRound={state.currentRound}
+        totalRounds={state.totalRounds}
+        history={state.history}
+        focusedRound={focusedRound}
+        onSelectRound={setFocusedRound}
+      />
     </main>
   );
 }

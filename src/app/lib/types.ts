@@ -219,11 +219,15 @@ export const NETWORK_EDGES: NetworkEdge[] = [
   { source: "ContiParts", target: "VolkswagenAG" },
 ];
 
+// Tier & emotion palettes harmonized with the warm-cream base. Muted,
+// perceptually even, and with a common chroma so no tier or emotion
+// shouts over the others. The single bright terracotta (var(--primary))
+// is reserved for the active/thinking agent so it always reads as signal.
 export const TIER_COLORS: Record<Tier, string> = {
-  foundry: "#8b5cf6",       // purple
-  chipDesigner: "#3b82f6",  // blue
-  tier1Supplier: "#22c55e", // green
-  oem: "#f97316",           // orange
+  foundry: "#6F5B7E",       // plum
+  chipDesigner: "#547587",  // dusty blue
+  tier1Supplier: "#7A8A5F", // sage
+  oem: "#B6804A",           // muted amber
 };
 
 export const TIER_LABELS: Record<Tier, string> = {
@@ -234,12 +238,12 @@ export const TIER_LABELS: Record<Tier, string> = {
 };
 
 export const EMOTIONAL_COLORS: Record<EmotionalState, string> = {
-  confident: "#22c55e",
-  anxious: "#eab308",
-  angry: "#ef4444",
-  opportunistic: "#f97316",
-  cautious: "#6366f1",
-  loyal: "#3b82f6",
-  panicked: "#dc2626",
-  vindictive: "#991b1b",
+  confident: "#7A8A5F",     // sage
+  anxious: "#C2995A",       // soft amber
+  angry: "#B85A3C",         // terracotta-red
+  opportunistic: "#B6804A", // amber
+  cautious: "#6F7A8F",      // slate blue
+  loyal: "#547587",         // dusty blue
+  panicked: "#A03A28",      // deep red
+  vindictive: "#6F3A3A",    // oxblood
 };

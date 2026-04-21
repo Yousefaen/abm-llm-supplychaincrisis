@@ -47,3 +47,6 @@ __pycache__/
 
 # debug logs
 debug-*.log
+
+# local Claude Code settings (per-machine, not shared)
+.claude/
