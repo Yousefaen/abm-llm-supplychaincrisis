@@ -225,14 +225,16 @@ async def run_step_stream():
 
 @app.get("/api/state")
 async def get_state():
-    model = _get_model()
-    return model.get_full_state()
+    async with _lock:
+        model = _get_model()
+        return model.get_full_state()
 
 
 @app.get("/api/history")
 async def get_history():
-    model = _get_model()
-    return model.get_history()
+    async with _lock:
+        model = _get_model()
+        return model.get_history()
 
 
 @app.get("/api/debug/errors")

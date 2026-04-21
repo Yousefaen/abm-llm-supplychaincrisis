@@ -745,6 +745,9 @@ class SupplyChainModel(Model):
                         delta = max(-1.5, (fill - 0.5) * 3.0)
                     else:
                         delta = (fill - 0.65) * 1.0
+                    # Mean-reversion toward baseline 7.0 so trust can recover
+                    # once supply normalises (prevents permanent distrust lock-in).
+                    delta += 0.1 * (7.0 - old_trust)
                     new_trust = max(1.0, min(10.0, old_trust + delta))
                     buyer.trust_scores[supplier.agent_id] = round(new_trust, 1)
                 else:
@@ -805,7 +808,7 @@ class SupplyChainModel(Model):
 
             # Consume quarterly need from inventory
             consumed = min(buyer.inventory, buyer.effective_quarterly_need)
-            buyer.inventory -= consumed
+            buyer.inventory = max(0, buyer.inventory - consumed)
 
             # OEMs earn revenue from selling vehicles (simplified)
             if buyer.tier == "oem" and consumed > 0:
@@ -995,6 +998,10 @@ class SupplyChainModel(Model):
                 "memories": agent.memory_stream.to_list()[-15:],
                 "reflections": agent.reflections,
                 "memory_count": len(agent.memory_stream.records),
+                "parse_failure_count": agent.parse_failure_count,
+                "consecutive_parse_failures": agent.consecutive_parse_failures,
+                "last_parse_failure_round": agent.last_parse_failure_round,
+                "degraded": agent.consecutive_parse_failures >= 2,
             }
 
         return {

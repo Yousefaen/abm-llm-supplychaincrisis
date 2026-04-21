@@ -251,6 +251,22 @@ PERSONAS: dict[str, str] = {
 # Agent configuration dataclass
 # ---------------------------------------------------------------------------
 
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+
+def _validate_agent_id(value: str) -> str:
+    """Reject IDs that would be unsafe to interpolate into LLM prompts.
+
+    Agent IDs appear verbatim in prompt strings and in JSON keys, so we
+    keep them to a conservative alphanumeric/underscore whitelist. This
+    is defensive — today IDs are hard-coded, but the validator protects
+    any future flow that surfaces user-editable personas.
+    """
+    if not isinstance(value, str) or not _AGENT_ID_RE.match(value):
+        raise ValueError(f"invalid agent_id {value!r}: must match {_AGENT_ID_RE.pattern}")
+    return value
+
+
 @dataclass
 class AgentSpec:
     agent_id: str
@@ -262,6 +278,11 @@ class AgentSpec:
     downstream: list[str]
     initial_price: float
     quarterly_need: int = 0
+
+    def __post_init__(self) -> None:
+        _validate_agent_id(self.agent_id)
+        for other in (*self.upstream, *self.downstream):
+            _validate_agent_id(other)
 
 
 AGENT_SPECS: dict[str, AgentSpec] = {
@@ -426,6 +447,15 @@ class SupplyChainAgent(Agent):
 
         # Attention / cognitive load snapshot (updated each LLM call)
         self.last_cognitive_load: float = 0.0
+
+        # LLM parse-failure tracking. A silently failed parse causes the
+        # agent to fall through to rule-based defaults, which looks like the
+        # simulation is "converging" but is actually losing personality.
+        # Surface consecutive failures so the frontend can flag a degraded
+        # agent and the operator can decide whether to abort or continue.
+        self.parse_failure_count: int = 0
+        self.consecutive_parse_failures: int = 0
+        self.last_parse_failure_round: int | None = None
 
     # ------------------------------------------------------------------
     # Backward-compat: expose a single emotional label derived from affect
@@ -973,8 +1003,12 @@ class SupplyChainAgent(Agent):
                     "H3",
                 )
                 # endregion
+                self.consecutive_parse_failures = 0
                 return parsed
             # Parse failed — capture raw output for diagnostics
+            self.parse_failure_count += 1
+            self.consecutive_parse_failures += 1
+            self.last_parse_failure_round = current_round
             _recent_errors.append({
                 "agent_id": self.agent_id,
                 "round": current_round,
@@ -982,6 +1016,7 @@ class SupplyChainAgent(Agent):
                 "error_type": "parse_failed",
                 "raw_text": text[:500],
                 "text_len": len(text),
+                "consecutive": self.consecutive_parse_failures,
             })
             if len(_recent_errors) > _MAX_ERRORS:
                 _recent_errors.pop(0)
@@ -995,12 +1030,16 @@ class SupplyChainAgent(Agent):
             # endregion
         except Exception as exc:
             print(f"[LLM ERROR] {self.agent_id}: {exc}")
+            self.parse_failure_count += 1
+            self.consecutive_parse_failures += 1
+            self.last_parse_failure_round = current_round
             _recent_errors.append({
                 "agent_id": self.agent_id,
                 "round": current_round,
                 "model": model,
                 "error_type": type(exc).__name__,
                 "error_message": str(exc)[:500],
+                "consecutive": self.consecutive_parse_failures,
             })
             if len(_recent_errors) > _MAX_ERRORS:
                 _recent_errors.pop(0)
