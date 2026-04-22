@@ -1,13 +1,21 @@
-"""Historical market data and observable market environment.
+"""Historical news feed and observable market environment.
 
-Grounds the simulation in real semiconductor market conditions (2020-2022)
-and provides a shared observable market state that all agents can see —
-the equivalent of a "Bloomberg terminal" for the supply chain.
+The agents see two kinds of world information:
 
-This is the key missing piece for emergent behavior: agents reason not just
-about their bilateral partners, but about the *macro* environment.  Different
-personas interpret the same data differently, creating divergent strategies
-from shared stimuli (the Stanford Generative Agents insight).
+1. **Exogenous news** — what happened in the outside world this quarter
+   (pandemic, storm, fab fire, policy change). These are TRIGGERS, not
+   outcomes. A real procurement exec would read them in the news.
+
+2. **Endogenous observables** — aggregate metrics computed from live agent
+   behavior (industry avg fill rate, sentiment from agents' emotional states,
+   hoarding totals, price trend, bullwhip risk). These EMERGE from the
+   simulation, not announced to it.
+
+Deliberately excluded from the prompt: utilization percentages, spot price
+indices, lead times, auto production indices. Those are *outcomes* of the
+crisis; including them as inputs would cause agents to role-play the crisis
+instead of producing it. The dataclass retains them for post-hoc comparison
+against ground truth, but format_for_prompt does not surface them.
 """
 
 from __future__ import annotations
@@ -19,21 +27,26 @@ if TYPE_CHECKING:
     from agents import SupplyChainAgent
 
 # ---------------------------------------------------------------------------
-# Historical data tables — real-world semiconductor market, Q1 2020 – Q2 2022
+# Historical news feed — Q1 2020 – Q2 2022
 # ---------------------------------------------------------------------------
-# Sources: TSMC/Samsung earnings, OICA auto production data, Susquehanna
-# lead time tracker, IHS Markit, industry press.  Values are representative
-# composites rounded for simulation purposes.
+# real_events holds only TRIGGER events (world happenings agents could read
+# in a newspaper). Supply-chain outcomes like "foundry utilization 100%",
+# "double-ordering rampant", "OEMs idle plants" are deliberately omitted —
+# those should emerge from agent behavior, not be told to agents.
+#
+# The numeric fields (foundry_utilization_pct, auto_production_index, etc.)
+# are retained for post-hoc ground-truth comparison but NOT surfaced to the
+# LLM prompt.
 
 @dataclass
 class HistoricalQuarter:
-    """Real-world market snapshot for one quarter."""
-    period: str                          # e.g. "Q1 2020"
-    foundry_utilization_pct: float       # TSMC+Samsung combined utilization
-    auto_production_index: float         # global auto production, 1.0 = 2019 baseline
-    chip_spot_price_index: float         # automotive MCU spot price, 1.0 = 2019 avg
-    lead_time_weeks: float               # order-to-delivery for automotive chips
-    real_events: list[str]               # actual events that happened
+    """Real-world market snapshot for one quarter (ground-truth reference)."""
+    period: str
+    foundry_utilization_pct: float       # kept for analysis — not in prompt
+    auto_production_index: float         # kept for analysis — not in prompt
+    chip_spot_price_index: float         # kept for analysis — not in prompt
+    lead_time_weeks: float               # kept for analysis — not in prompt
+    real_events: list[str]               # triggers only — surfaced to agents
 
 
 HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
@@ -44,9 +57,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=0.95,
         lead_time_weeks=12,
         real_events=[
-            "COVID-19 pandemic shuts auto plants worldwide",
-            "TSMC sees consumer electronics surge, keeps fabs running at 87%",
-            "Auto OEMs cancel chip orders to conserve cash",
+            "COVID-19 pandemic declared; governments impose lockdowns",
+            "Auto assembly plants shut in Italy, Spain, US Midwest",
+            "Remote work mandates drive laptop and monitor purchases",
         ],
     ),
     2: HistoricalQuarter(
@@ -56,9 +69,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=0.98,
         lead_time_weeks=14,
         real_events=[
-            "Global auto production hits lowest point since 2009 financial crisis",
-            "Foundries reallocate wafer starts to consumer/data center segments",
-            "TSMC revenue rises 29% YoY despite automotive collapse",
+            "Lockdowns deepen; dealerships closed in most markets",
+            "US CARES Act and European stimulus programs launched",
+            "Gaming console, webcam, and home-office hardware sales surge",
         ],
     ),
     3: HistoricalQuarter(
@@ -68,9 +81,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=1.05,
         lead_time_weeks=17,
         real_events=[
-            "China auto sales recover to 2019 levels; US/EU lagging",
-            "OEMs try to reinstate canceled orders — foundry slots taken",
-            "Lead times extend past 4 months for first time since 2018",
+            "China lifts most COVID restrictions; PRC auto sales recover fully",
+            "Phased reopenings begin in US and EU",
+            "Vaccine candidates enter late-stage trials",
         ],
     ),
     4: HistoricalQuarter(
@@ -80,10 +93,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=1.20,
         lead_time_weeks=22,
         real_events=[
-            "VW halts production at Wolfsburg plant — first major OEM shutdown",
-            "Continental warns of 'severe semiconductor bottleneck'",
-            "TSMC reports foundry utilization approaching 100%",
-            "Spot prices for automotive MCUs rise 20% above contract",
+            "Pfizer/BioNTech and Moderna vaccines receive emergency authorization",
+            "US stimulus checks distributed; consumer discretionary spending rises",
+            "Pent-up auto demand returns faster than most OEMs forecast",
         ],
     ),
     5: HistoricalQuarter(
@@ -93,11 +105,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=1.80,
         lead_time_weeks=26,
         real_events=[
-            "Ford idles 7 plants; GM cuts Silverado/Sierra production",
-            "Industry losses projected at $110B for the year",
-            "Double-ordering rampant — true demand obscured by 30-40%",
-            "Texas winter storm knocks out Samsung Austin fab for 6 weeks",
-            "Suez Canal blockage disrupts component shipments",
+            "Severe Texas winter storm disrupts industrial operations in Austin",
+            "Ever Given blocks Suez Canal for six days",
+            "Global vaccine rollout accelerates",
         ],
     ),
     6: HistoricalQuarter(
@@ -107,10 +117,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=2.50,
         lead_time_weeks=26,
         real_events=[
-            "TSMC raises automotive chip prices 15-20%",
-            "Spot market prices hit 2-3x contract for some MCUs",
-            "Ford/GM announce direct foundry partnerships, angering Tier-1s",
-            "EU announces European Chips Act framework",
+            "European Commission proposes European Chips Act framework",
+            "Several OEMs publicly explore direct foundry partnerships",
+            "Reopening continues in most developed markets",
         ],
     ),
     7: HistoricalQuarter(
@@ -120,10 +129,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=3.20,
         lead_time_weeks=26,
         real_events=[
-            "Renesas Naka fab fire (Mar 2021 impact continues into Q3)",
-            "Toyota cuts global production by 40% in September",
-            "Spot prices for some MCUs reach 10x contract levels",
-            "Bosch CEO calls chip shortage 'the biggest crisis in auto industry'",
+            "Fire at Renesas Naka fab damages automotive-MCU production equipment",
+            "Toyota announces 40% global production cut for September",
+            "Delta variant drives new case surges in several countries",
         ],
     ),
     8: HistoricalQuarter(
@@ -133,10 +141,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=2.80,
         lead_time_weeks=24,
         real_events=[
-            "US CHIPS Act passes Senate; $52B in semiconductor subsidies",
-            "TSMC announces $12B Arizona fab (operational ~2024)",
-            "Samsung announces $17B Taylor TX fab",
-            "Inventory hoarding hits record — dealers sitting on unsold cars with missing chips",
+            "US CHIPS Act passes Senate ($52B in semiconductor subsidies)",
+            "TSMC announces $12B Arizona fab; Samsung announces $17B Taylor TX fab",
+            "Omicron variant emerges, renewing supply-chain concerns",
         ],
     ),
     9: HistoricalQuarter(
@@ -146,10 +153,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=2.20,
         lead_time_weeks=20,
         real_events=[
-            "Supply gradually improving but behavioral distortions persist",
-            "Apparent demand 30% higher than real demand due to phantom orders",
-            "Some OEMs sitting on excess inventory from panic ordering",
-            "Russia-Ukraine war creates new uncertainty for neon gas supply (40% from Ukraine)",
+            "Russia invades Ukraine",
+            "Neon gas supply uncertain (Ukraine supplies ~40% of semiconductor neon)",
+            "European energy prices spike; inflation pressure rises",
         ],
     ),
     10: HistoricalQuarter(
@@ -159,11 +165,9 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
         chip_spot_price_index=1.60,
         lead_time_weeks=16,
         real_events=[
-            "CHIPS and Science Act signed into law (Aug 2022)",
-            "Bullwhip effect: order cancellations cascade upstream",
-            "Consumer electronics demand crashes — foundries scramble to fill auto",
-            "Spot prices falling rapidly as phantom demand evaporates",
-            "Trust across supply chain at all-time low",
+            "CHIPS and Science Act signed into law in the US",
+            "US Federal Reserve raises interest rates; inflation remains elevated",
+            "Work-from-home hardware spending clearly slowing",
         ],
     ),
 }
@@ -177,33 +181,32 @@ HISTORICAL_DATA: dict[int, HistoricalQuarter] = {
 class MarketState:
     """Aggregate market intelligence observable by all agents.
 
-    This is the simulation's equivalent of public market data — every agent
-    can see it, but they interpret it through their own persona lens.
+    Retains exogenous historical fields for post-hoc comparison, but the
+    prompt formatter surfaces only the endogenous (emergent) metrics plus
+    the news-trigger events.
     """
 
     round: int
     period: str
 
-    # From historical data (exogenous)
-    foundry_utilization_pct: float       # how tight is foundry capacity?
-    auto_production_index: float         # how is overall auto demand?
-    chip_spot_price_index: float         # what are chips trading at on spot market?
-    lead_time_weeks: float               # how long to get chips?
-    real_events: list[str]               # what actually happened in the real world
+    # Exogenous (kept for analysis + frontend display, NOT in prompt)
+    foundry_utilization_pct: float
+    auto_production_index: float
+    chip_spot_price_index: float
+    lead_time_weeks: float
+    real_events: list[str]
 
-    # From live agent behavior (endogenous) — computed from simulation state
-    aggregate_demand_vs_supply: float    # total orders / total foundry capacity
-    avg_price_offered: float             # volume-weighted avg across all suppliers
-    industry_inventory_weeks: float      # total inventory / weekly consumption rate
-    market_sentiment: str                # derived from agent emotional states
-    pct_agents_panicked: float           # fraction of agents in panic/anxious state
-    avg_fill_rate: float                 # industry-wide average fill rate
-    total_hoarded_units: int             # units held in reserve across all suppliers
-    price_trend: str                     # "rising", "stable", "falling"
-
-    # Derived signals
-    bullwhip_risk: str                   # "low", "moderate", "high", "extreme"
-    supply_crunch_severity: str          # "none", "mild", "moderate", "severe", "crisis"
+    # Endogenous — computed from live agent behavior (these ARE in the prompt)
+    aggregate_demand_vs_supply: float
+    avg_price_offered: float
+    industry_inventory_weeks: float
+    market_sentiment: str
+    pct_agents_panicked: float
+    avg_fill_rate: float
+    total_hoarded_units: int
+    price_trend: str
+    bullwhip_risk: str
+    supply_crunch_severity: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -230,38 +233,38 @@ class MarketState:
 # ---------------------------------------------------------------------------
 # Tier-specific interpretation frames
 # ---------------------------------------------------------------------------
-# Same data, different lens — this is what creates divergent agent behavior
-# from shared stimuli (the core Stanford insight for emergence).
+# Same observable data, different lens — this creates divergent behavior from
+# shared stimuli (the core Stanford insight for emergence). These frames are
+# strategic role descriptions, not outcome predictions, so they stay.
 
 TIER_INTERPRETATION_FRAMES: dict[str, str] = {
     "foundry": (
-        "As a foundry, you have PRICING POWER when utilization is high. "
-        "You must decide: maximize short-term margins on scarce capacity, "
-        "or invest in loyalty with automotive customers who may remember "
-        "your choices when the cycle turns. Governments are watching — "
-        "political backlash is a real risk if you visibly neglect automotive."
+        "As a foundry, you sit at the apex of the chip supply chain. Your "
+        "allocation choices cascade all the way down to car production. "
+        "Consider: maximize short-term margin on scarce capacity, or invest "
+        "in long-term customer loyalty. Governments are watching — visible "
+        "neglect of strategic industries can invite political backlash."
     ),
     "chipDesigner": (
-        "As a chip designer, you are SQUEEZED from both sides. Foundry "
-        "prices are rising while your OEM/Tier-1 customers resist passing "
-        "costs through. You must balance upstream sourcing security against "
-        "downstream margin preservation. Your design wins are your moat — "
-        "losing a customer now could mean losing them permanently."
+        "As a chip designer, you are squeezed from both sides. Foundry costs "
+        "and lead times affect your upstream supply; OEM and Tier-1 "
+        "customers resist cost pass-through. You must balance upstream "
+        "sourcing security against downstream margin. Design wins are your "
+        "moat — a customer lost now may be lost permanently."
     ),
     "tier1Supplier": (
-        "As a Tier-1 supplier, you are the SHOCK ABSORBER between chip "
-        "makers and auto OEMs. Your customers demand guaranteed supply AND "
-        "stable prices, which is impossible in a shortage. Some OEMs are "
-        "trying to go around you directly to foundries — an existential "
-        "threat to your business model. Your inventory buffer is your lifeline."
+        "As a Tier-1 supplier, you are the shock absorber between chip "
+        "makers and auto OEMs. Customers demand guaranteed supply AND stable "
+        "prices — an impossibility in a shortage. Some OEMs may try to go "
+        "around you directly to foundries, an existential threat to your "
+        "model. Your inventory buffer is your lifeline."
     ),
     "oem": (
-        "As an OEM, you are the END CONSUMER of this supply chain. Every "
-        "chip you can't get means a car you can't build — and lost revenue "
-        "that competitors will capture. Your competitors' procurement "
-        "strategies directly affect your allocation. You must decide: pay "
-        "premium prices for security, or hold the line and risk production "
-        "shutdowns?"
+        "As an OEM, you are the end consumer of this supply chain. Every "
+        "chip you cannot obtain means a car you cannot build, and revenue "
+        "competitors will capture. Competitors' procurement choices affect "
+        "your allocation. Decide: pay premium prices for security, or hold "
+        "the line and risk production shutdowns."
     ),
 }
 
@@ -271,11 +274,7 @@ TIER_INTERPRETATION_FRAMES: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 class MarketEnvironment:
-    """Computes and maintains the observable market state each round.
-
-    Combines exogenous historical data with endogenous agent behavior to
-    create a shared information environment that all agents can observe.
-    """
+    """Computes and maintains the observable market state each round."""
 
     def __init__(self) -> None:
         self.history: list[MarketState] = []
@@ -316,26 +315,21 @@ class MarketEnvironment:
             emotional_states.append(agent.emotional_state)
             fill_rates.append(agent.fill_rate)
 
-            # Demand side: buyers' quarterly needs
             if agent.spec.quarterly_need > 0:
                 total_demand += agent.effective_quarterly_need
-                total_weekly_consumption += agent.effective_quarterly_need / 13  # ~13 weeks/quarter
+                total_weekly_consumption += agent.effective_quarterly_need / 13
 
-            # Supply side: foundry capacity
             if agent.tier == "foundry":
                 total_foundry_capacity += agent.effective_capacity
 
-            # Inventory across all agents
             total_inventory += agent.inventory
 
-            # Supplier pricing and hoarding
             if agent.current_decision:
                 if "price_offered" in agent.current_decision:
                     prices.append(float(agent.current_decision["price_offered"]))
                 if "held_in_reserve" in agent.current_decision:
                     total_hoarded += int(agent.current_decision["held_in_reserve"])
 
-        # Aggregate metrics
         demand_vs_supply = (
             total_demand / total_foundry_capacity
             if total_foundry_capacity > 0 else 1.0
@@ -354,7 +348,6 @@ class MarketEnvironment:
 
         avg_fill = sum(fill_rates) / len(fill_rates) if fill_rates else 1.0
 
-        # Market sentiment
         if pct_panicked > 0.6:
             sentiment = "panic"
         elif pct_panicked > 0.3:
@@ -366,7 +359,6 @@ class MarketEnvironment:
         else:
             sentiment = "uncertain"
 
-        # Price trend
         if self._prev_avg_price is not None and avg_price > 0:
             pct_change = (avg_price - self._prev_avg_price) / self._prev_avg_price if self._prev_avg_price > 0 else 0
             if pct_change > 0.05:
@@ -379,7 +371,6 @@ class MarketEnvironment:
             price_trend = "stable"
         self._prev_avg_price = avg_price
 
-        # Bullwhip risk assessment
         if demand_vs_supply > 1.3 and pct_panicked > 0.4:
             bullwhip_risk = "extreme"
         elif demand_vs_supply > 1.15 or pct_panicked > 0.3:
@@ -389,14 +380,16 @@ class MarketEnvironment:
         else:
             bullwhip_risk = "low"
 
-        # Supply crunch severity
-        if historical.foundry_utilization_pct >= 0.99 and avg_fill < 0.5:
+        # Supply-crunch severity from ENDOGENOUS state (fill rate + dem/sup ratio)
+        # rather than historical utilization. Lets crunch emerge when supply
+        # actually fails to meet demand, not because we told agents so.
+        if avg_fill < 0.40 and demand_vs_supply > 1.25:
             crunch = "crisis"
-        elif historical.foundry_utilization_pct >= 0.97 and avg_fill < 0.7:
+        elif avg_fill < 0.60 and demand_vs_supply > 1.10:
             crunch = "severe"
-        elif historical.foundry_utilization_pct >= 0.95:
+        elif avg_fill < 0.80:
             crunch = "moderate"
-        elif historical.foundry_utilization_pct >= 0.90:
+        elif avg_fill < 0.95:
             crunch = "mild"
         else:
             crunch = "none"
@@ -427,59 +420,39 @@ class MarketEnvironment:
     def format_for_prompt(self, state: MarketState, tier: str) -> str:
         """Format market state for an agent's decision prompt.
 
-        Includes the tier-specific interpretation frame so the same data
-        triggers different reasoning in different agents.
+        Surfaces only:
+        - period label
+        - news triggers from real_events (what happened in the world)
+        - endogenous observables (metrics an industry participant could
+          compute from their own data + public behavior of peers)
+        - the tier-specific strategic lens
+
+        Exogenous indices (foundry utilization %, chip spot price index,
+        auto production index, lead-time weeks) are deliberately OMITTED
+        so they cannot be used as outcome cheats.
         """
         interpretation = TIER_INTERPRETATION_FRAMES.get(tier, "")
-
-        # Historical trend context (show previous round for comparison)
-        trend_lines = []
-        if len(self.history) >= 2:
-            prev = self.history[-2]
-            if state.chip_spot_price_index != prev.chip_spot_price_index:
-                direction = "up" if state.chip_spot_price_index > prev.chip_spot_price_index else "down"
-                trend_lines.append(
-                    f"  Spot price trend: {direction} from "
-                    f"{prev.chip_spot_price_index:.1f}x to "
-                    f"{state.chip_spot_price_index:.1f}x baseline"
-                )
-            if state.lead_time_weeks != prev.lead_time_weeks:
-                direction = "lengthening" if state.lead_time_weeks > prev.lead_time_weeks else "shortening"
-                trend_lines.append(
-                    f"  Lead times {direction}: {prev.lead_time_weeks:.0f} -> "
-                    f"{state.lead_time_weeks:.0f} weeks"
-                )
-        trend_section = "\n".join(trend_lines) if trend_lines else ""
 
         events_text = "\n".join(f"  - {e}" for e in state.real_events[:4])
 
         lines = [
             f"MARKET INTELLIGENCE — {state.period}",
-            f"  Foundry utilization: {state.foundry_utilization_pct:.0%}",
-            f"  Auto production index: {state.auto_production_index:.2f}x (vs 2019 baseline)",
-            f"  Chip spot price index: {state.chip_spot_price_index:.1f}x (vs 2019 baseline)",
-            f"  Lead time: {state.lead_time_weeks:.0f} weeks (order-to-delivery)",
             "",
-            "INDUSTRY CONDITIONS (from observable market behavior):",
-            f"  Demand/supply ratio: {state.aggregate_demand_vs_supply:.2f}x",
-            f"  Industry avg fill rate: {state.avg_fill_rate:.0%}",
+            "INDUSTRY CONDITIONS (observed from your own operations and peer behavior):",
+            f"  Demand/supply ratio (aggregate orders vs foundry capacity): {state.aggregate_demand_vs_supply:.2f}x",
+            f"  Industry avg fill rate last round: {state.avg_fill_rate:.0%}",
             f"  Industry inventory: {state.industry_inventory_weeks:.1f} weeks of supply",
             f"  Market sentiment: {state.market_sentiment.upper()}",
-            f"  Agents in distress: {state.pct_agents_panicked:.0%}",
-            f"  Units hoarded industry-wide: {state.total_hoarded_units}",
-            f"  Price trend: {state.price_trend}",
-            f"  Bullwhip risk: {state.bullwhip_risk.upper()}",
-            f"  Supply crunch: {state.supply_crunch_severity.upper()}",
+            f"  Fraction of partners in distress: {state.pct_agents_panicked:.0%}",
+            f"  Units held in reserve industry-wide: {state.total_hoarded_units}",
+            f"  Price trend last round: {state.price_trend}",
+            f"  Bullwhip risk (derived): {state.bullwhip_risk.upper()}",
+            f"  Supply crunch (derived): {state.supply_crunch_severity.upper()}",
         ]
-
-        if trend_section:
-            lines.append("")
-            lines.append("TRENDS:")
-            lines.append(trend_section)
 
         if events_text:
             lines.append("")
-            lines.append("REAL-WORLD EVENTS THIS QUARTER:")
+            lines.append("REAL-WORLD NEWS THIS QUARTER:")
             lines.append(events_text)
 
         if interpretation:
@@ -490,11 +463,14 @@ class MarketEnvironment:
         return "\n".join(lines)
 
     def get_brief_summary(self, state: MarketState) -> str:
-        """Short summary for signal generation and memory storage."""
+        """Short summary for signal generation and memory storage.
+
+        Endogenous-only, mirrors format_for_prompt's scope.
+        """
         return (
-            f"{state.period}: Foundries at {state.foundry_utilization_pct:.0%} "
-            f"utilization, spot prices {state.chip_spot_price_index:.1f}x baseline, "
-            f"lead times {state.lead_time_weeks:.0f}wk, "
-            f"sentiment: {state.market_sentiment}, "
-            f"crunch: {state.supply_crunch_severity}."
+            f"{state.period}: sentiment={state.market_sentiment}, "
+            f"avg fill={state.avg_fill_rate:.0%}, "
+            f"bullwhip risk={state.bullwhip_risk}, "
+            f"crunch={state.supply_crunch_severity}, "
+            f"price trend={state.price_trend}."
         )
