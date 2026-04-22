@@ -978,15 +978,19 @@ class SupplyChainAgent(Agent):
             self.last_output_tokens = resp.usage.output_tokens
             self.last_model_used = model
 
-            # Accumulate cost on the model immediately
+            # Accumulate cost on the model. Serialized via _cost_lock so
+            # concurrent agents (parallel phase) don't lose updates to the
+            # non-atomic ``+=``.
             if model == MODEL_SONNET:
                 cost_in, cost_out = SONNET_INPUT_COST_PER_M, SONNET_OUTPUT_COST_PER_M
             else:
                 cost_in, cost_out = HAIKU_INPUT_COST_PER_M, HAIKU_OUTPUT_COST_PER_M
-            m.total_cost += (
+            increment = (
                 resp.usage.input_tokens * cost_in / 1_000_000
                 + resp.usage.output_tokens * cost_out / 1_000_000
             )
+            with m._cost_lock:
+                m.total_cost += increment
             text = resp.content[0].text if resp.content and resp.content[0].type == "text" else ""
             parsed = parse_llm_json(text)
             if parsed:

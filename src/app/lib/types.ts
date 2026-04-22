@@ -155,7 +155,13 @@ export interface SSEAgentDecided {
   agent_id: string;
   tier: Tier;
   role: string;
-  decision: AgentDecision;
+  decision: AgentDecision & {
+    plan?: StrategicPlan;
+    signals?: AgentSignal[];
+    insights?: string[];
+    held_in_reserve?: number;
+    reasoning?: string;
+  };
 }
 
 export interface SSERoundComplete {
@@ -169,7 +175,35 @@ export interface SSERoundComplete {
   status: string;
 }
 
-export type SSEEvent = SSEAgentDecided | SSERoundComplete;
+export interface SSEError {
+  type: "error";
+  message: string;
+  exc_type?: string;
+  traceback?: string;
+}
+
+export type SSEEvent = SSEAgentDecided | SSERoundComplete | SSEError;
+
+// Activity-feed entry built from a streamed SSE decision. The feed grows
+// live as rounds advance — each agent_decided event becomes one entry.
+export type ActivityRole =
+  | "planning"
+  | "signaling"
+  | "buyer"
+  | "supplier"
+  | "reflection";
+
+export interface ActivityEntry {
+  id: string;
+  round: number;
+  agentId: string;
+  tier: Tier;
+  role: ActivityRole;
+  emotion?: EmotionalState;
+  summary: string;
+  detail?: string;
+  timestamp: number;
+}
 
 // History response from GET /api/history
 export interface HistoryRound {

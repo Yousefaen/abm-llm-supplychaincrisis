@@ -7,6 +7,7 @@ import Scrubber from "./components/Scrubber";
 import SupplyChainGraph from "./components/SupplyChainGraph";
 import Ticker from "./components/Ticker";
 import InspectPanel from "./components/InspectPanel";
+import ActivityFeed from "./components/ActivityFeed";
 
 export default function Home() {
   const { state, reset, step, fetchState, autoPlay, pause } = useSimulation();
@@ -82,30 +83,41 @@ export default function Home() {
         onReset={reset}
       />
 
-      {/* Hero area — Live canvas or Inspect document, never both at once */}
-      <div className="flex-1 min-h-0 relative">
-        {agentData ? (
-          <InspectPanel
-            agent={agentData}
-            currentRound={state.currentRound}
-            onClose={() => setSelectedAgent(null)}
+      {/* Hero area — Live canvas + right-side activity feed, or Inspect
+          document when an agent is selected. The feed is hidden below lg
+          breakpoints so the graph keeps room to breathe on tablets. */}
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 relative min-w-0">
+          {agentData ? (
+            <InspectPanel
+              agent={agentData}
+              currentRound={state.currentRound}
+              onClose={() => setSelectedAgent(null)}
+            />
+          ) : (
+            <div className="relative h-full">
+              <SupplyChainGraph
+                agents={state.agents}
+                onSelectAgent={handleSelectAgent}
+                selectedAgent={selectedAgent}
+                thinkingAgent={state.thinkingAgent}
+              />
+              <Ticker
+                history={state.history}
+                currentEvent={state.currentEvent}
+                thinkingAgent={state.thinkingAgent}
+                agents={state.agents}
+              />
+            </div>
+          )}
+        </div>
+        <aside className="hidden lg:flex w-80 xl:w-96 shrink-0">
+          <ActivityFeed
+            entries={state.liveFeed}
+            agents={state.agents}
+            thinkingAgent={state.thinkingAgent}
           />
-        ) : (
-          <div className="relative h-full">
-            <SupplyChainGraph
-              agents={state.agents}
-              onSelectAgent={handleSelectAgent}
-              selectedAgent={selectedAgent}
-              thinkingAgent={state.thinkingAgent}
-            />
-            <Ticker
-              history={state.history}
-              currentEvent={state.currentEvent}
-              thinkingAgent={state.thinkingAgent}
-              agents={state.agents}
-            />
-          </div>
-        )}
+        </aside>
       </div>
 
       <Scrubber

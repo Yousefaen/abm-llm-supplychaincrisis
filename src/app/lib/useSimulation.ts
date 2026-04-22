@@ -8,12 +8,17 @@ import {
   runStepStream,
 } from "./api";
 import type {
+  ActivityEntry,
+  ActivityRole,
   AgentState,
+  EmotionalState,
   HistoryRound,
   RoundMetrics,
   SSEAgentDecided,
+  SSEError,
   SSEEvent,
   SSERoundComplete,
+  Tier,
 } from "./types";
 
 export interface SimState {
@@ -28,6 +33,7 @@ export interface SimState {
   history: HistoryRound[];
   thinkingAgent: string | null;
   error: string | null;
+  liveFeed: ActivityEntry[];
 }
 
 const INITIAL: SimState = {
@@ -42,7 +48,112 @@ const INITIAL: SimState = {
   history: [],
   thinkingAgent: null,
   error: null,
+  liveFeed: [],
 };
+
+// Cap on feed length so long auto-plays don't grow state without bound.
+// 300 entries ≈ 10 rounds × ~30 streamed events per round with headroom.
+const FEED_LIMIT = 300;
+
+// Turn a streamed agent_decided event into a compact feed row. We condense
+// each role into a one-line summary + optional detail; the UI handles any
+// richer rendering (colors, truncation, badges).
+function makeActivityEntry(
+  event: SSEAgentDecided,
+  round: number,
+): ActivityEntry | null {
+  const { agent_id, tier, role, decision } = event;
+  const validRole: ActivityRole | null =
+    role === "planning" ||
+    role === "signaling" ||
+    role === "buyer" ||
+    role === "supplier" ||
+    role === "reflection"
+      ? role
+      : null;
+  if (!validRole) return null;
+
+  let summary = "";
+  let detail: string | undefined;
+
+  if (validRole === "planning") {
+    const plan = decision.plan;
+    summary = plan?.invalidated
+      ? "plan invalidated — replanning"
+      : "sets strategy";
+    detail = (plan?.goals ?? []).slice(0, 2).join("  ·  ");
+  } else if (validRole === "signaling") {
+    const signals = decision.signals ?? [];
+    if (signals.length === 0) return null;
+    const first = signals[0];
+    const to = first.recipient ?? "all partners";
+    summary = `${first.signal_type.replace("_", " ")} → ${to}`;
+    detail = first.content;
+    if (signals.length > 1) {
+      detail += `  (+${signals.length - 1})`;
+    }
+  } else if (validRole === "reflection") {
+    const insights = decision.insights ?? [];
+    if (insights.length === 0) return null;
+    summary = `${insights.length} insight${insights.length > 1 ? "s" : ""}`;
+    detail = insights[0];
+  } else if (validRole === "buyer") {
+    const orders = decision.orders ?? {};
+    const entries = Object.entries(orders).filter(
+      ([, v]) => Number(v) > 0,
+    );
+    const total = entries.reduce((a, [, v]) => a + Number(v), 0);
+    summary = total > 0 ? `orders ${total} units` : "no orders";
+    const dests = entries.map(([k, v]) => `${v} from ${k}`).join(", ");
+    detail = dests || undefined;
+    if (decision.will_seek_alternatives) {
+      detail = detail
+        ? `seeking alternatives · ${detail}`
+        : "seeking alternative suppliers";
+    }
+    if (decision.reasoning) {
+      detail = detail
+        ? `${detail} — ${decision.reasoning}`
+        : decision.reasoning;
+    }
+  } else if (validRole === "supplier") {
+    const allocs = decision.allocations ?? {};
+    const held = decision.held_in_reserve ?? 0;
+    const entries = Object.entries(allocs).filter(
+      ([, v]) => Number(v) > 0,
+    );
+    const total = entries.reduce((a, [, v]) => a + Number(v), 0);
+    summary =
+      total > 0 ? `allocates ${total} units` : "no allocations";
+    if (held > 0) summary += ` · holds ${held}`;
+    const dests = entries.map(([k, v]) => `${v} → ${k}`).join(", ");
+    detail = dests || undefined;
+    if (decision.reasoning) {
+      detail = detail
+        ? `${detail} — ${decision.reasoning}`
+        : decision.reasoning;
+    }
+  }
+
+  return {
+    id: `${round}-${agent_id}-${validRole}-${event_counter()}`,
+    round,
+    agentId: agent_id,
+    tier: tier as Tier,
+    role: validRole,
+    emotion: decision.emotional_state as EmotionalState | undefined,
+    summary,
+    detail,
+    timestamp: Date.now(),
+  };
+}
+
+// Monotonic counter so entries always get a unique, stable React key even
+// when several arrive within the same millisecond.
+let _eventCounter = 0;
+function event_counter(): number {
+  return ++_eventCounter;
+}
 
 export function useSimulation() {
   const [state, setState] = useState<SimState>(INITIAL);
@@ -79,21 +190,29 @@ export function useSimulation() {
       await runStepStream((event: SSEEvent) => {
         if (event.type === "agent_decided") {
           const e = event as SSEAgentDecided;
-          setState((s) => ({
-            ...s,
-            thinkingAgent: e.agent_id,
-            agents: {
-              ...s.agents,
-              [e.agent_id]: {
-                ...s.agents[e.agent_id],
-                current_decision: e.decision,
-                emotional_state:
-                  e.decision.emotional_state ??
-                  s.agents[e.agent_id]?.emotional_state ??
-                  "confident",
+          setState((s) => {
+            const round = s.currentRound + 1;
+            const entry = makeActivityEntry(e, round);
+            const nextFeed = entry
+              ? [...s.liveFeed, entry].slice(-FEED_LIMIT)
+              : s.liveFeed;
+            return {
+              ...s,
+              thinkingAgent: e.agent_id,
+              liveFeed: nextFeed,
+              agents: {
+                ...s.agents,
+                [e.agent_id]: {
+                  ...s.agents[e.agent_id],
+                  current_decision: e.decision,
+                  emotional_state:
+                    e.decision.emotional_state ??
+                    s.agents[e.agent_id]?.emotional_state ??
+                    "confident",
+                },
               },
-            },
-          }));
+            };
+          });
         } else if (event.type === "round_complete") {
           const e = event as SSERoundComplete;
           setState((s) => ({
@@ -105,6 +224,14 @@ export function useSimulation() {
             agents: e.agents,
             metrics: e.metrics,
             totalCost: e.total_cost,
+            thinkingAgent: null,
+          }));
+        } else if (event.type === "error") {
+          const e = event as SSEError;
+          setState((s) => ({
+            ...s,
+            status: "error",
+            error: e.exc_type ? `${e.exc_type}: ${e.message}` : e.message,
             thinkingAgent: null,
           }));
         }

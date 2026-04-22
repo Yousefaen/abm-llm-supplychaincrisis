@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from mesa import Model, DataCollector
+
+# Max concurrent LLM calls per phase. The Anthropic tier-1 budget is ~50 RPM
+# and ~40-50k ITPM; with ~9 agents × ~1.5-2k input tokens, 5 concurrent stays
+# comfortably under both. Bump via PHASE_CONCURRENCY env var when your
+# organisation's tier allows; the SDK auto-retries 429s so overshoot is
+# self-healing, just slower.
+PHASE_CONCURRENCY = max(1, int(os.environ.get("PHASE_CONCURRENCY", "5")))
 
 from agents import (
     AGENT_SPECS,
@@ -100,6 +110,11 @@ class SupplyChainModel(Model):
         # waiting for the entire round to complete. Cleared each round.
         self._decision_callback: Callable[[dict[str, Any]], None] | None = None
 
+        # Serializes the ``total_cost += …`` read-modify-write in agents._call_llm
+        # once LLM calls are parallelized within a phase. Python's ``+=`` on a
+        # float is NOT atomic, so concurrent workers would drop cost updates.
+        self._cost_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # One quarter of the simulation (API entry point)
     # ------------------------------------------------------------------
@@ -188,36 +203,36 @@ class SupplyChainModel(Model):
             self._run_signaling(current_round)
 
             # ----------------------------------------------------------
-            # Phase 1: ORDERING (bottom-up)
-            # OEMs order -> Tier-1 orders -> Chip Designers order
+            # Phase 1: ORDERING (bottom-up). Agents within a tier run in
+            # parallel; tiers serialize because each tier reads the prior
+            # tier's current_decision via _format_partner_actions.
             # ----------------------------------------------------------
-            for oem in self.oems:
-                oem.step()
-                self._record_decision(oem)
+            for agent, _, exc in self._parallel_map(self.oems, lambda a: a.step()):
+                if exc is None:
+                    self._record_decision(agent)
 
-            for t1 in self.tier1s:
-                t1.step()  # buyer step
-                self._record_decision(t1, role="buyer")
+            for agent, _, exc in self._parallel_map(self.tier1s, lambda a: a.step()):
+                if exc is None:
+                    self._record_decision(agent, role="buyer")
 
-            for cd in self.designers:
-                cd.step()  # buyer step
-                self._record_decision(cd, role="buyer")
+            for agent, _, exc in self._parallel_map(self.designers, lambda a: a.step()):
+                if exc is None:
+                    self._record_decision(agent, role="buyer")
 
             # ----------------------------------------------------------
-            # Phase 2: ALLOCATION (top-down)
-            # Foundries allocate -> Chip Designers allocate -> Tier-1 allocates
+            # Phase 2: ALLOCATION (top-down). Same fan-out pattern.
             # ----------------------------------------------------------
-            for foundry in self.foundries:
-                foundry.step()
-                self._record_decision(foundry)
+            for agent, _, exc in self._parallel_map(self.foundries, lambda a: a.step()):
+                if exc is None:
+                    self._record_decision(agent)
 
-            for cd in self.designers:
-                cd.supply_step()
-                self._record_decision(cd, role="supplier")
+            for agent, _, exc in self._parallel_map(self.designers, lambda a: a.supply_step()):
+                if exc is None:
+                    self._record_decision(agent, role="supplier")
 
-            for t1 in self.tier1s:
-                t1.supply_step()
-                self._record_decision(t1, role="supplier")
+            for agent, _, exc in self._parallel_map(self.tier1s, lambda a: a.supply_step()):
+                if exc is None:
+                    self._record_decision(agent, role="supplier")
 
             # ----------------------------------------------------------
             # Phase 3: RESOLUTION — flow allocations and compute fill rates
@@ -334,26 +349,29 @@ class SupplyChainModel(Model):
     # Signaling — pre-decision communication between agents
     # ------------------------------------------------------------------
     def _run_signaling(self, current_round: int) -> None:
-        """Each agent generates 0-2 signals, then we route them to recipients."""
-        # Clear previous signals
+        """Each agent generates 0-2 signals concurrently, then we route
+        them to recipients after every agent has responded."""
         for agent in self.agents_map.values():
             agent.signals_received = []
 
         all_signals = []
-        for agent in self.agents_map.values():
-            signals = agent.generate_signals()
+        all_agents = list(self.agents_map.values())
+        for agent, signals, exc in self._parallel_map(
+            all_agents, lambda a: a.generate_signals()
+        ):
+            if exc is not None or not signals:
+                continue
             all_signals.extend(signals)
-            if signals:
-                self._emit_decision({
-                    "agent_id": agent.agent_id,
-                    "tier": agent.tier,
-                    "role": "signaling",
-                    "decision": {
-                        "signals": [s.to_dict() for s in signals],
-                    },
-                    "input_tokens": agent.last_input_tokens,
-                    "output_tokens": agent.last_output_tokens,
-                })
+            self._emit_decision({
+                "agent_id": agent.agent_id,
+                "tier": agent.tier,
+                "role": "signaling",
+                "decision": {
+                    "signals": [s.to_dict() for s in signals],
+                },
+                "input_tokens": agent.last_input_tokens,
+                "output_tokens": agent.last_output_tokens,
+            })
 
         # Route signals to recipients AND propagate affective contagion:
         # receivers drift toward the sender's emotional tone, weighted by how
@@ -397,17 +415,15 @@ class SupplyChainModel(Model):
         curr_demand = DEMAND_MULTIPLIERS.get(current_round, 1.0)
         demand_shift = abs(curr_demand - prev_demand) > 0.15
 
+        planners: list[tuple[SupplyChainAgent, bool]] = []
         for agent in self.agents_map.values():
-            needs_plan = False
             emergency = False
+            needs_plan = False
 
-            # Round 1: everyone creates initial plan
             if current_round == 1:
                 needs_plan = True
-            # Refresh every 3 rounds
             elif current_round % 3 == 1:
                 needs_plan = True
-            # Emergency: shock event invalidates existing plan
             elif has_capacity_shock or demand_shift:
                 if agent.current_plan and not agent.current_plan.invalidated:
                     agent.current_plan.invalidated = True
@@ -415,16 +431,29 @@ class SupplyChainModel(Model):
                     emergency = True
 
             if needs_plan:
-                plan = agent.create_plan(emergency=emergency)
-                if plan:
-                    self._emit_decision({
-                        "agent_id": agent.agent_id,
-                        "tier": agent.tier,
-                        "role": "planning",
-                        "decision": {"plan": plan.to_dict()},
-                        "input_tokens": agent.last_input_tokens,
-                        "output_tokens": agent.last_output_tokens,
-                    })
+                planners.append((agent, emergency))
+
+        if not planners:
+            return
+
+        # Map agent -> emergency flag so the closure can resolve it
+        emergency_by_id = {a.agent_id: e for a, e in planners}
+        plan_agents = [a for a, _ in planners]
+
+        for agent, plan, exc in self._parallel_map(
+            plan_agents,
+            lambda a: a.create_plan(emergency=emergency_by_id[a.agent_id]),
+        ):
+            if exc is not None or plan is None:
+                continue
+            self._emit_decision({
+                "agent_id": agent.agent_id,
+                "tier": agent.tier,
+                "role": "planning",
+                "decision": {"plan": plan.to_dict()},
+                "input_tokens": agent.last_input_tokens,
+                "output_tokens": agent.last_output_tokens,
+            })
 
     # ------------------------------------------------------------------
     # Affect update — realized outcomes shape emotions, then decay
@@ -596,18 +625,19 @@ class SupplyChainModel(Model):
         if current_round < 2:
             return  # Not enough memories to reflect on in round 1
 
-        for agent in self.agents_map.values():
-            insights = agent.reflect()
-            if insights:
-                # Record reflection event for streaming
-                self._emit_decision({
-                    "agent_id": agent.agent_id,
-                    "tier": agent.tier,
-                    "role": "reflection",
-                    "decision": {"insights": insights},
-                    "input_tokens": agent.last_input_tokens,
-                    "output_tokens": agent.last_output_tokens,
-                })
+        for agent, insights, exc in self._parallel_map(
+            list(self.agents_map.values()), lambda a: a.reflect()
+        ):
+            if exc is not None or not insights:
+                continue
+            self._emit_decision({
+                "agent_id": agent.agent_id,
+                "tier": agent.tier,
+                "role": "reflection",
+                "decision": {"insights": insights},
+                "input_tokens": agent.last_input_tokens,
+                "output_tokens": agent.last_output_tokens,
+            })
 
     # ------------------------------------------------------------------
     # Inventory carrying costs
@@ -894,6 +924,46 @@ class SupplyChainModel(Model):
                     {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:200]},
                     "H1",
                 )
+
+    def _parallel_map(
+        self,
+        agents: list[SupplyChainAgent],
+        fn: Callable[[SupplyChainAgent], Any],
+    ):
+        """Run ``fn(agent)`` for each agent concurrently, bounded by
+        PHASE_CONCURRENCY. Yields ``(agent, result, exception)`` tuples
+        in completion order so callers can stream per-agent output as
+        soon as each finishes.
+
+        Thread safety: each agent only mutates its own state during
+        ``step``/``supply_step``/``reflect``/``create_plan``/``generate_signals``,
+        and reads of peer state within the same phase are limited to fields
+        set in the prior phase (already stable). That's why we can fan-out
+        within a phase but still serialize phases.
+        """
+        if not agents:
+            return
+        with ThreadPoolExecutor(
+            max_workers=min(PHASE_CONCURRENCY, len(agents)),
+            thread_name_prefix="phase",
+        ) as pool:
+            futures = {pool.submit(fn, a): a for a in agents}
+            for fut in as_completed(futures):
+                agent = futures[fut]
+                try:
+                    yield agent, fut.result(), None
+                except Exception as exc:
+                    dbg_log(
+                        "model.py:_parallel_map",
+                        "agent_exception",
+                        {
+                            "agent_id": agent.agent_id,
+                            "exc_type": type(exc).__name__,
+                            "exc_msg": str(exc)[:200],
+                        },
+                        "H2",
+                    )
+                    yield agent, None, exc
 
     def _record_decision(self, agent: SupplyChainAgent, role: str = "") -> None:
         self._emit_decision({
