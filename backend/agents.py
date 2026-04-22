@@ -285,23 +285,30 @@ class AgentSpec:
             _validate_agent_id(other)
 
 
+# Capacities calibrated so the vertical supply-chain ratios hover near ~1.0x
+# at baseline demand (pre-2019 auto-MCU reality) rather than sitting slack at
+# the top. OEM quarterly_need reflects real 2019 unit production ratios
+# (Toyota 10.7M, Ford 4.5M, VW 11.0M -> ~40:17:43), so Ford is no longer
+# overweighted. Absolute magnitudes remain abstract "units/quarter" but the
+# RELATIVE structure now matches the real auto-semiconductor chain, which is
+# what drives emergent crisis location.
 AGENT_SPECS: dict[str, AgentSpec] = {
     "TaiwanSemi": AgentSpec(
         "TaiwanSemi", "TaiwanSemi (TSMC)", "foundry",
-        1000, 0, [], ["EuroChip", "AmeriSemi"], 10.0,
+        800, 0, [], ["EuroChip", "AmeriSemi"], 10.0,
     ),
     "KoreaSilicon": AgentSpec(
         "KoreaSilicon", "KoreaSilicon (Samsung)", "foundry",
-        600, 0, [], ["EuroChip", "AmeriSemi"], 11.0,
+        450, 0, [], ["EuroChip", "AmeriSemi"], 11.0,
     ),
     "EuroChip": AgentSpec(
         "EuroChip", "EuroChip (Infineon)", "chipDesigner",
-        700, 200, ["TaiwanSemi", "KoreaSilicon"], ["BoschAuto", "ContiParts"], 25.0,
+        500, 200, ["TaiwanSemi", "KoreaSilicon"], ["BoschAuto", "ContiParts"], 25.0,
         quarterly_need=600,
     ),
     "AmeriSemi": AgentSpec(
         "AmeriSemi", "AmeriSemi (NXP/TI)", "chipDesigner",
-        800, 150, ["TaiwanSemi", "KoreaSilicon"], ["BoschAuto", "ContiParts"], 24.0,
+        550, 150, ["TaiwanSemi", "KoreaSilicon"], ["BoschAuto", "ContiParts"], 24.0,
         quarterly_need=650,
     ),
     "BoschAuto": AgentSpec(
@@ -321,8 +328,8 @@ AGENT_SPECS: dict[str, AgentSpec] = {
     ),
     "FordAuto": AgentSpec(
         "FordAuto", "FordAuto (Ford)", "oem",
-        0, 80, ["BoschAuto", "ContiParts"], [], 0.0,
-        quarterly_need=350,
+        0, 30, ["BoschAuto", "ContiParts"], [], 0.0,
+        quarterly_need=180,
     ),
     "VolkswagenAG": AgentSpec(
         "VolkswagenAG", "VolkswagenAG (VW)", "oem",
