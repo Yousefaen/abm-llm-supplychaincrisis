@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from mesa import Model, DataCollector
 
@@ -95,13 +95,28 @@ class SupplyChainModel(Model):
         # Round-level decision log (for streaming to frontend)
         self.round_decisions: list[dict[str, Any]] = []
 
+        # Optional callback fired for every round_decisions entry as it's
+        # produced — lets the SSE endpoint stream incrementally instead of
+        # waiting for the entire round to complete. Cleared each round.
+        self._decision_callback: Callable[[dict[str, Any]], None] | None = None
+
     # ------------------------------------------------------------------
     # One quarter of the simulation (API entry point)
     # ------------------------------------------------------------------
     # Mesa 3.5 replaces instance ``step`` with _wrapped_step (returns None).
     # Never call model.step() from FastAPI expecting a dict — use advance_quarter().
-    def advance_quarter(self) -> dict[str, Any]:
-        """Execute one round. Returns a summary dict for the API."""
+    def advance_quarter(
+        self,
+        decision_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Execute one round. Returns a summary dict for the API.
+
+        ``decision_callback`` is invoked from the worker thread for each
+        entry appended to ``round_decisions`` (agent decisions, plans,
+        reflections, signals). Callers must marshal it back to their own
+        thread/event loop.
+        """
+        self._decision_callback = decision_callback
         current_round = int(self.time) + 1  # Mesa time is 0-indexed
         if current_round > self.total_rounds:
             self.status = "complete"
@@ -329,7 +344,7 @@ class SupplyChainModel(Model):
             signals = agent.generate_signals()
             all_signals.extend(signals)
             if signals:
-                self.round_decisions.append({
+                self._emit_decision({
                     "agent_id": agent.agent_id,
                     "tier": agent.tier,
                     "role": "signaling",
@@ -402,7 +417,7 @@ class SupplyChainModel(Model):
             if needs_plan:
                 plan = agent.create_plan(emergency=emergency)
                 if plan:
-                    self.round_decisions.append({
+                    self._emit_decision({
                         "agent_id": agent.agent_id,
                         "tier": agent.tier,
                         "role": "planning",
@@ -585,7 +600,7 @@ class SupplyChainModel(Model):
             insights = agent.reflect()
             if insights:
                 # Record reflection event for streaming
-                self.round_decisions.append({
+                self._emit_decision({
                     "agent_id": agent.agent_id,
                     "tier": agent.tier,
                     "role": "reflection",
@@ -865,8 +880,23 @@ class SupplyChainModel(Model):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _emit_decision(self, entry: dict[str, Any]) -> None:
+        """Append to round_decisions and fire the streaming callback if set."""
+        self.round_decisions.append(entry)
+        cb = self._decision_callback
+        if cb is not None:
+            try:
+                cb(entry)
+            except Exception as exc:
+                dbg_log(
+                    "model.py:_emit_decision",
+                    "callback_failed",
+                    {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:200]},
+                    "H1",
+                )
+
     def _record_decision(self, agent: SupplyChainAgent, role: str = "") -> None:
-        self.round_decisions.append({
+        self._emit_decision({
             "agent_id": agent.agent_id,
             "tier": agent.tier,
             "role": role or ("supplier" if "allocations" in agent.current_decision else "buyer"),
