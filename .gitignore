@@ -48,5 +48,8 @@ __pycache__/
 # debug logs
 debug-*.log
 
+# legacy eval scratch JSONs (pre-registry); registry lives under evals/<id>/
+backend/_eval_run_*.json
+
 # local Claude Code settings (per-machine, not shared)
 .claude/
