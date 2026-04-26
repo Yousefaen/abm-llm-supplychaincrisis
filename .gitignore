@@ -48,5 +48,8 @@ __pycache__/
 # debug logs
 debug-*.log
 
+# auto-persona pipeline artifacts (filings + generated personas)
+backend/personas_cache/
+
 # local Claude Code settings (per-machine, not shared)
 .claude/
