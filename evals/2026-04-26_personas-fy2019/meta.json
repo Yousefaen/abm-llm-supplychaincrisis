@@ -1,0 +1,25 @@
+{
+  "experiment_id": "2026-04-26_personas-fy2019",
+  "label": "personas-fy2019",
+  "created_at": "2026-04-26T11:54:43-04:00",
+  "git": {
+    "branch": "feat/auto-persona-edgar",
+    "commit_short": "eb07796",
+    "dirty": false
+  },
+  "config": {
+    "seed": 42,
+    "temperature": 1.0,
+    "total_rounds": 10,
+    "phase_concurrency": 5,
+    "scenario": "The Great Semiconductor Shortage",
+    "persona_variant": "auto-fy2019"
+  },
+  "summary": {
+    "wall_clock_sec": 780.548460483551,
+    "total_cost_usd": 2.2089688,
+    "rounds_completed": 10,
+    "error_count": 1
+  },
+  "notes": "Auto-generated FY2019 personas (TSMC/NXP/Toyota/Ford) loaded; the other 5 agents use hand-crafted personas. Pair with 2026-04-22_capacity-rebalance to test whether crisis-recognition behavior survives the persona swap."
+}
