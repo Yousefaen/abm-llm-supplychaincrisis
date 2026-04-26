@@ -37,22 +37,48 @@ def _request(url: str) -> bytes:
         return r.read()
 
 
-def get_latest_filing_url(cik: int, form: str) -> tuple[str, str, str]:
-    """Return (filing_url, accession_number, filing_date) for the most recent
-    filing of ``form`` (e.g. "10-K" or "20-F") for the given CIK."""
+def get_filing_url(
+    cik: int, form: str, fiscal_year: int | None = None
+) -> tuple[str, str, str, str]:
+    """Resolve a filing for the given CIK / form.  If ``fiscal_year`` is set,
+    return the filing whose period_of_report falls in that calendar year
+    (i.e. fiscal year ending in that year — for a 2019 10-K, period_of_report
+    is typically 2019-12-31, filed early 2020).  Otherwise return the most
+    recent filing of that form.
+
+    Returns ``(url, accession_number, filing_date, report_date)``.
+
+    Note: only searches the ``filings.recent`` slice (~last 1000 filings),
+    which covers ~5-10 years for an active filer.  Older filings would
+    require fetching the additional shards in ``filings.files[]`` — not
+    needed for our 2019-2025 window.
+    """
     idx_url = f"https://data.sec.gov/submissions/CIK{cik:010d}.json"
     idx = json.loads(_request(idx_url))
     rec = idx["filings"]["recent"]
     forms = rec["form"]
     accs = rec["accessionNumber"]
     docs = rec["primaryDocument"]
-    dates = rec["filingDate"]
-    for f, acc, doc, date in zip(forms, accs, docs, dates):
-        if f == form:
-            acc_no_dashes = acc.replace("-", "")
-            url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_no_dashes}/{doc}"
-            return url, acc, date
-    raise RuntimeError(f"No {form} filing found for CIK {cik}")
+    f_dates = rec["filingDate"]
+    r_dates = rec.get("reportDate", [""] * len(forms))
+
+    for f, acc, doc, fdate, rdate in zip(forms, accs, docs, f_dates, r_dates):
+        if f != form:
+            continue
+        if fiscal_year is not None and not (rdate or "").startswith(str(fiscal_year)):
+            continue
+        acc_no_dashes = acc.replace("-", "")
+        url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_no_dashes}/{doc}"
+        return url, acc, fdate, rdate
+
+    fy_msg = f" (fiscal year {fiscal_year})" if fiscal_year else ""
+    raise RuntimeError(f"No {form} filing found for CIK {cik}{fy_msg}")
+
+
+# Backward-compatible alias for the latest-only call site.
+def get_latest_filing_url(cik: int, form: str) -> tuple[str, str, str]:
+    url, acc, fdate, _ = get_filing_url(cik, form)
+    return url, acc, fdate
 
 
 # Strip script/style blocks first (their content is irrelevant), then any tag.
@@ -69,20 +95,31 @@ def html_to_text(html: bytes) -> str:
     return text.strip()
 
 
-def fetch_filing(agent_id: str, cik: int, form: str) -> Path:
-    """Resolve, fetch, and cache the latest filing for this agent.  Returns
-    the path to the cached plain-text file. Idempotent — re-runs are no-ops
-    once the cache file exists."""
+def fetch_filing(
+    agent_id: str, cik: int, form: str, fiscal_year: int | None = None
+) -> Path:
+    """Resolve, fetch, and cache a filing for this agent.
+
+    With ``fiscal_year``, fetches the 10-K/20-F covering that fiscal year
+    (intended for pre-crisis baseline personas — 2019 captures pre-COVID
+    posture without leaking crisis-era observations into agent prompts).
+
+    Cache is partitioned by year so 2019 and latest can coexist.
+    Returns the path to the cached plain-text file.
+    """
     out_dir = CACHE_DIR / agent_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{form.lower().replace('-', '_')}.txt"
+    suffix = f"_{fiscal_year}" if fiscal_year is not None else ""
+    out_file = out_dir / f"{form.lower().replace('-', '_')}{suffix}.txt"
     if out_file.exists():
-        print(f"  [{agent_id}] cached -> {out_file.relative_to(Path(__file__).parent)} ({out_file.stat().st_size//1024}KB)")
+        rel = out_file.relative_to(Path(__file__).parent)
+        print(f"  [{agent_id}] cached -> {rel} ({out_file.stat().st_size//1024}KB)")
         return out_file
 
-    print(f"  [{agent_id}] resolving CIK {cik} {form}...")
-    url, acc, date = get_latest_filing_url(cik, form)
-    print(f"  [{agent_id}] downloading {acc} ({date}) ...")
+    fy_label = f" FY{fiscal_year}" if fiscal_year else " (latest)"
+    print(f"  [{agent_id}] resolving CIK {cik} {form}{fy_label}...")
+    url, acc, fdate, rdate = get_filing_url(cik, form, fiscal_year)
+    print(f"  [{agent_id}] downloading {acc} (filed {fdate}, period {rdate}) ...")
     time.sleep(0.15)
     raw = _request(url)
     text = html_to_text(raw)
@@ -92,16 +129,25 @@ def fetch_filing(agent_id: str, cik: int, form: str) -> Path:
 
 
 if __name__ == "__main__":
-    # CLI: python fetch_filings.py            -> fetch all wired sources
-    #      python fetch_filings.py TaiwanSemi -> fetch one
+    # CLI:
+    #   python fetch_filings.py                  -> all sources, latest filing
+    #   python fetch_filings.py TaiwanSemi       -> one source, latest filing
+    #   python fetch_filings.py --fy 2019        -> all sources, FY2019 filing
+    #   python fetch_filings.py FordAuto --fy 2019
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     from persona_sources import EDGAR_SOURCES
 
-    targets = sys.argv[1:] or list(EDGAR_SOURCES)
+    args = list(sys.argv[1:])
+    fiscal_year: int | None = None
+    if "--fy" in args:
+        i = args.index("--fy")
+        fiscal_year = int(args.pop(i + 1))
+        args.pop(i)
+    targets = args or list(EDGAR_SOURCES)
     for aid in targets:
         if aid not in EDGAR_SOURCES:
             print(f"  [{aid}] no EDGAR source wired up; skipping")
             continue
         src = EDGAR_SOURCES[aid]
-        fetch_filing(aid, src["cik"], src["form"])
+        fetch_filing(aid, src["cik"], src["form"], fiscal_year)

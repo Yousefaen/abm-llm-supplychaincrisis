@@ -28,15 +28,22 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+    args = list(sys.argv[1:])
+    fiscal_year: int | None = None
+    if "--fy" in args:
+        i = args.index("--fy")
+        fiscal_year = int(args.pop(i + 1))
+        args.pop(i)
+    targets = args or list(EDGAR_SOURCES)
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     client = anthropic.Anthropic()
     total_in = 0
     total_out = 0
     t0 = time.time()
 
-    targets = sys.argv[1:] or list(EDGAR_SOURCES)
-
-    print(f"Generating personas for {len(targets)} agent(s): {', '.join(targets)}\n")
+    fy_label = f"FY{fiscal_year}" if fiscal_year else "latest"
+    print(f"Generating {fy_label} personas for {len(targets)} agent(s): {', '.join(targets)}\n")
 
     for agent_id in targets:
         if agent_id not in EDGAR_SOURCES:
@@ -47,10 +54,12 @@ def main() -> None:
         ctx = ROLE_CONTEXT[agent_id]
 
         # 1. Fetch the filing (cached after first run)
-        doc_path = fetch_filing(agent_id, src["cik"], src["form"])
+        doc_path = fetch_filing(agent_id, src["cik"], src["form"], fiscal_year)
 
-        # 2. Generate persona — cache to disk so reruns are free
-        out_file = OUT_DIR / f"{agent_id}.txt"
+        # 2. Generate persona — cache partitioned by fiscal year so 2019 and
+        #    latest can coexist for side-by-side review.
+        suffix = f"_fy{fiscal_year}" if fiscal_year else ""
+        out_file = OUT_DIR / f"{agent_id}{suffix}.txt"
         if out_file.exists():
             print(f"  [{agent_id}] persona cached -> {out_file.name}; delete to regenerate\n")
             continue
@@ -83,21 +92,29 @@ def main() -> None:
         f"{total_in} in / {total_out} out tokens, ${cost:.4f} ===\n"
     )
 
-    # Side-by-side comparison
+    # Side-by-side comparison: hand-crafted, latest auto, FY-specific auto
+    suffix = f"_fy{fiscal_year}" if fiscal_year else ""
     print("\n" + "=" * 78)
-    print("HAND-CRAFTED  vs  AUTO-GENERATED  (eyeball comparison)")
+    if fiscal_year:
+        print(f"HAND-CRAFTED  vs  LATEST-AUTO  vs  FY{fiscal_year}-AUTO  (eyeball comparison)")
+    else:
+        print("HAND-CRAFTED  vs  LATEST-AUTO  (eyeball comparison)")
     print("=" * 78)
     for agent_id in targets:
         if agent_id not in EDGAR_SOURCES:
             continue
-        out_file = OUT_DIR / f"{agent_id}.txt"
-        if not out_file.exists():
-            continue
+        latest_file = OUT_DIR / f"{agent_id}.txt"
+        fy_file = OUT_DIR / f"{agent_id}{suffix}.txt"
         print(f"\n----- {agent_id} -----")
         print(f"\n>>> HAND-CRAFTED ({len(PERSONAS[agent_id])} chars):\n")
         print(PERSONAS[agent_id])
-        print(f"\n>>> AUTO-GENERATED ({out_file.stat().st_size} chars):\n")
-        print(out_file.read_text(encoding="utf-8"))
+        if latest_file.exists() and latest_file != fy_file:
+            print(f"\n>>> LATEST-AUTO ({latest_file.stat().st_size} chars):\n")
+            print(latest_file.read_text(encoding="utf-8"))
+        if fy_file.exists():
+            label = f"FY{fiscal_year}-AUTO" if fiscal_year else "AUTO"
+            print(f"\n>>> {label} ({fy_file.stat().st_size} chars):\n")
+            print(fy_file.read_text(encoding="utf-8"))
         print()
 
 

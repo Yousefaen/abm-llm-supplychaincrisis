@@ -48,8 +48,20 @@ def _trim_to_narrative(text: str) -> str:
 
 SYSTEM_PROMPT = """You write executive-style personas for a procurement \
 supply-chain simulation. Each persona becomes the system prompt for an LLM \
-agent that role-plays a real company's senior decision-maker during a chip \
-shortage.
+agent that role-plays a real company's senior decision-maker. The simulation \
+will subject this agent to scenario shocks (demand swings, supplier capacity \
+events) and the architectural test is whether the agent recognises and adapts \
+to a crisis without being told one is happening.
+
+CRITICAL — DO NOT LEAK FUTURE EVENTS. If the source filing was finalised \
+after its fiscal-year-end and includes any "subsequent events", forward- \
+looking outlook, or post-period commentary about pandemics, supply-chain \
+disruptions, semiconductor shortages, geopolitical conflicts, or other \
+crises that emerged AFTER the fiscal year being reported on, IGNORE that \
+material. Build the persona only from the company's steady-state \
+description of itself during the fiscal year — its strategy, its operating \
+model, its competitive positioning, its baseline risk factors. The agent \
+must enter the simulation with pre-crisis priors, not crisis-aware ones.
 
 Output exactly one persona block, no preamble or commentary, matching the \
 schema of the provided examples:
@@ -63,9 +75,9 @@ schema of the provided examples:
 
 Total length: 250-300 words. Match the voice and concreteness of the examples. \
 Ground every personality trait, internal-dynamics tension, and KPI in something \
-the source filing actually says about the company's strategy, risk factors, \
-competitors, or operating model. Do not invent numbers — pull thresholds from \
-the filing where you can."""
+the source filing actually says about the company's baseline strategy, ongoing \
+risk factors, competitors, or operating model. Do not invent numbers — pull \
+thresholds from the filing where you can."""
 
 
 def build_persona(
