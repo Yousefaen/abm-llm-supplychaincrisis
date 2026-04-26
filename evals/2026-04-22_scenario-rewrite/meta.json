@@ -1,0 +1,25 @@
+{
+  "experiment_id": "2026-04-22_scenario-rewrite",
+  "label": "scenario-rewrite",
+  "created_at": "2026-04-25T22:26:57-04:00",
+  "git": {
+    "branch": "main",
+    "commit_short": "7305d0a",
+    "dirty": false
+  },
+  "config": {
+    "seed": 42,
+    "temperature": 1.0,
+    "total_rounds": 10,
+    "phase_concurrency": 5,
+    "scenario": "The Great Semiconductor Shortage",
+    "persona_variant": "hand-crafted"
+  },
+  "summary": {
+    "wall_clock_sec": 808.5961339473724,
+    "total_cost_usd": 2.226801800000001,
+    "rounds_completed": 10,
+    "error_count": 5
+  },
+  "notes": "After rewriting SCENARIO_EVENTS to remove outcome descriptions (narrative-leakage fix). Pair with 2026-04-22_baseline."
+}
