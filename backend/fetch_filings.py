@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -33,8 +35,23 @@ def _request(url: str) -> bytes:
         url,
         headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read()
+    except urllib.error.URLError as e:
+        # Some IR sites (e.g. annualreport2019.volkswagenag.com) serve cert
+        # chains that don't validate against Windows Python's bundled CA
+        # store.  Fall back to an unverified context for those hosts only —
+        # the data we're fetching is public, so the integrity tradeoff is
+        # acceptable for prototype-stage research.
+        if "CERTIFICATE_VERIFY_FAILED" in str(e):
+            print(f"  [warn] cert verification failed for {url[:80]}, retrying unverified")
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
+                return r.read()
+        raise
 
 
 def get_filing_url(
@@ -93,6 +110,74 @@ def html_to_text(html: bytes) -> str:
     text = _TAG.sub(" ", text)
     text = _WS.sub(" ", text)
     return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# IR-website PDF fetch (for non-SEC filers — Samsung, Infineon, Continental,
+# Bosch, VW). EDGAR's submissions API is replaced with a direct PDF URL,
+# downloaded and text-extracted via pypdf.  The extracted text is then
+# consumed by persona_builder identically to the EDGAR text path, so
+# downstream code doesn't care which source the text came from.
+# ---------------------------------------------------------------------------
+def _download_pdf(url: str, dest: Path) -> int:
+    """Download a PDF to ``dest``. Returns size in bytes."""
+    raw = _request(url)
+    dest.write_bytes(raw)
+    return len(raw)
+
+
+def pdf_to_text(pdf_path: Path) -> str:
+    """Extract plain text from every page of a PDF.
+
+    Uses pypdf.  Pages are joined with double-newlines so paragraph and
+    section boundaries survive into the trim regex.  Most annual reports
+    extract reasonably cleanly — the heavy formatting / image content gets
+    dropped, which is fine for persona generation since we only need the
+    narrative strategy/risk/operations sections.
+    """
+    from pypdf import PdfReader  # imported here so EDGAR-only usage doesn't pay the cost
+
+    reader = PdfReader(str(pdf_path))
+    parts: list[str] = []
+    for page in reader.pages:
+        try:
+            t = page.extract_text() or ""
+        except Exception:
+            t = ""
+        if t.strip():
+            parts.append(t)
+    return "\n\n".join(parts)
+
+
+def fetch_ir_filing(agent_id: str, url: str, fiscal_year: int) -> Path:
+    """Fetch a non-SEC company's annual report PDF and cache its extracted
+    text alongside the EDGAR-style cache layout.  Idempotent.
+
+    Returns the path to the extracted .txt file (NOT the .pdf), so the
+    downstream persona builder consumes the same shape from both
+    sources.
+    """
+    out_dir = CACHE_DIR / agent_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = out_dir / f"ir_{fiscal_year}.pdf"
+    txt_path = out_dir / f"ir_{fiscal_year}.txt"
+
+    if txt_path.exists():
+        rel = txt_path.relative_to(Path(__file__).parent)
+        print(f"  [{agent_id}] cached -> {rel} ({txt_path.stat().st_size//1024}KB)")
+        return txt_path
+
+    if not pdf_path.exists():
+        print(f"  [{agent_id}] downloading IR PDF FY{fiscal_year} from {url[:80]}...")
+        time.sleep(0.15)
+        size = _download_pdf(url, pdf_path)
+        print(f"  [{agent_id}] saved {size//1024}KB PDF")
+
+    print(f"  [{agent_id}] extracting text from PDF...")
+    text = pdf_to_text(pdf_path)
+    txt_path.write_text(text, encoding="utf-8")
+    print(f"  [{agent_id}] saved {len(text)//1024}KB plain text")
+    return txt_path
 
 
 def fetch_filing(

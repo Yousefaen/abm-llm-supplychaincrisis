@@ -18,9 +18,11 @@ from pathlib import Path
 
 import anthropic
 
-# Re-use the project's existing personas as few-shot examples so the generated
-# style matches what the sim already consumes.
-from agents import PERSONAS, MODEL_SONNET
+# Re-use the project's hand-crafted personas as few-shot examples so the
+# generated style matches what the sim already consumes.  Import the
+# *hardcoded* dict explicitly so few-shots stay stable even when the run-time
+# PERSONA_VARIANT env var would route the public ``PERSONAS`` to auto-files.
+from agents import _HARDCODED_PERSONAS as PERSONAS, MODEL_SONNET
 
 # 10-Ks/20-Fs commonly run 500K-1M chars in plain text. Sonnet 4 has a 200K
 # context window; we send the first ~50K tokens which usually covers Item 1
@@ -29,12 +31,31 @@ from agents import PERSONAS, MODEL_SONNET
 # positioning.
 _MAX_FILING_CHARS = 200_000
 
-# Inline-XBRL filings front-load 100KB+ of taxonomy tags before any prose.
-# Skip to the first narrative section header.  10-Ks use "ITEM 1. Business",
-# 20-Fs use "Item 4. Information on the Company".
+# Inline-XBRL SEC filings front-load 100KB+ of taxonomy tags; annual-report
+# PDFs front-load cover pages, table of contents, and letter-to-shareholders
+# boilerplate.  Skip to the first narrative section header that signals the
+# start of substantive strategy / operations discussion.  Patterns:
+#
+#   - SEC 10-K:  "ITEM 1. Business"
+#   - SEC 20-F:  "Item 4. Information on the Company" / "Item 4A. History
+#                and Development"
+#   - German/EU annual reports: "Group Management Report" / "Combined
+#                Management Report" / "Strategic Report" / "Business Model"
+#   - Korean (Samsung): "Business Overview"
+#
+# The regex picks the earliest hit, so even when a report uses several of
+# these labels the trim still lands at the first substantive section.
 _NARRATIVE_START = re.compile(
-    r"(ITEM\s+1\.\s*Business|Item\s+4\.\s*Information\s+on\s+the\s+Company"
-    r"|Item\s+4A?\.\s*History\s+and\s+Development)",
+    r"("
+    r"ITEM\s+1\.\s*Business"
+    r"|Item\s+4\.\s*Information\s+on\s+the\s+Company"
+    r"|Item\s+4A?\.\s*History\s+and\s+Development"
+    r"|(?:Combined\s+|Group\s+)?Management\s+Report"
+    r"|Business\s+Overview"
+    r"|Business\s+Model"
+    r"|Strategy\s+and\s+Outlook"
+    r"|Strategic\s+Report"
+    r")",
     re.IGNORECASE,
 )
 
