@@ -1,13 +1,14 @@
 "use client";
 
-import { X } from "lucide-react";
+import { FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type {
+  AgentId,
   AgentSignal,
   AgentState,
   MemoryRecord,
 } from "../lib/types";
-import { EMOTIONAL_COLORS, TIER_LABELS } from "../lib/types";
+import { EMOTIONAL_COLORS, PERSONA_SOURCES, TIER_LABELS } from "../lib/types";
 
 interface Props {
   agent: AgentState;
@@ -57,6 +58,25 @@ export default function InspectPanel({ agent, currentRound, onClose }: Props) {
           <h1 className="font-serif text-4xl md:text-5xl leading-tight tracking-tight">
             {agent.display_name}
           </h1>
+          {/* Persona provenance — names the public document the system
+              prompt was generated from, so a viewer can trace any agent
+              behavior back to a verifiable source. */}
+          {(() => {
+            const src = PERSONA_SOURCES[agent.agent_id as AgentId];
+            if (!src) return null;
+            return (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground italic font-serif">
+                <FileText className="h-3 w-3 shrink-0" aria-hidden />
+                <span>
+                  Persona generated from {src.company}'s FY{src.fiscalYear}{" "}
+                  {src.document}
+                  <span className="ml-1.5 text-[10px] not-italic font-mono uppercase tracking-wider opacity-70">
+                    {src.origin}
+                  </span>
+                </span>
+              </p>
+            );
+          })()}
           <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
             <span className="flex items-center gap-1.5">
               <span

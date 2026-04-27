@@ -1,9 +1,12 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  getExperiment,
   getHistory,
+  getServerConfig,
   getState,
+  listExperiments,
   resetSimulation,
   runStepStream,
 } from "./api";
@@ -12,6 +15,9 @@ import type {
   ActivityRole,
   AgentState,
   EmotionalState,
+  ExperimentDetail,
+  ExperimentRunRound,
+  ExperimentSummary,
   HistoryRound,
   RoundMetrics,
   SSEAgentDecided,
@@ -22,7 +28,7 @@ import type {
 } from "./types";
 
 export interface SimState {
-  status: "idle" | "running" | "complete" | "error";
+  status: "idle" | "running" | "complete" | "error" | "replay";
   currentRound: number;
   totalRounds: number;
   currentEvent: string;
@@ -34,6 +40,17 @@ export interface SimState {
   thinkingAgent: string | null;
   error: string | null;
   liveFeed: ActivityEntry[];
+  // Replay mode — when an experiment is loaded, currentRound is bound to
+  // the scrubber and state.agents reflects historical state at that round.
+  replay: {
+    active: boolean;
+    experimentId: string | null;
+    experimentLabel: string | null;
+    perRound: ExperimentRunRound[];
+    notes: string;
+  };
+  personaVariant: string;
+  experiments: ExperimentSummary[];
 }
 
 const INITIAL: SimState = {
@@ -49,6 +66,15 @@ const INITIAL: SimState = {
   thinkingAgent: null,
   error: null,
   liveFeed: [],
+  replay: {
+    active: false,
+    experimentId: null,
+    experimentLabel: null,
+    perRound: [],
+    notes: "",
+  },
+  personaVariant: "hand-crafted",
+  experiments: [],
 };
 
 // Cap on feed length so long auto-plays don't grow state without bound.
@@ -300,5 +326,195 @@ export function useSimulation() {
     abortRef.current?.abort();
   }, []);
 
-  return { state, reset, step, fetchState, autoPlay, pause };
+  // -------------------------------------------------------------------
+  // Replay mode — load a registry experiment and walk through its rounds
+  // without paying for a 14-min live LLM run. Used for the demo path.
+  // -------------------------------------------------------------------
+
+  // Project a single registry round into the SimState shape so the
+  // existing graph / inspect / activity-feed components don't need to
+  // know anything about replay.
+  const projectRound = useCallback(
+    (detail: ExperimentDetail, roundIdx: number): Partial<SimState> => {
+      const r = detail.run.per_round[roundIdx - 1];
+      if (!r) return {};
+      const agents: Record<string, AgentState> = {};
+      for (const [aid, snap] of Object.entries(r.agents)) {
+        // Pad missing fields with sane defaults so the UI doesn't NPE.
+        agents[aid] = {
+          agent_id: aid,
+          display_name: aid,
+          tier: snap.tier,
+          inventory: snap.inventory,
+          capacity: snap.capacity ?? 0,
+          current_price: snap.current_price,
+          emotional_state: snap.emotional_state,
+          fill_rate: snap.fill_rate,
+          trust_scores: snap.trust_scores ?? {},
+          current_decision: snap.current_decision ?? null,
+          decision_history: [],
+          round_results: [],
+          revenue: snap.revenue ?? 0,
+          costs: snap.costs ?? 0,
+          profit: snap.profit ?? 0,
+          round_revenue: snap.round_revenue ?? 0,
+          round_costs: snap.round_costs ?? 0,
+          effective_quarterly_need: snap.effective_quarterly_need ?? 0,
+          memories: snap.memories ?? [],
+          reflections: snap.reflections ?? [],
+          memory_count: snap.memory_count ?? 0,
+          current_plan: snap.current_plan ?? null,
+          signals_sent: snap.signals_sent ?? [],
+          signals_received: snap.signals_received ?? [],
+        };
+      }
+
+      // Build an activity feed from the round events so the side panel
+      // populates for replay rounds the same way it does live.
+      const feed: ActivityEntry[] = [];
+      for (const evt of r.events ?? []) {
+        const fakeSse: SSEAgentDecided = {
+          type: "agent_decided",
+          agent_id: evt.agent_id,
+          tier: evt.tier as Tier,
+          role: evt.role,
+          decision: evt.decision,
+        };
+        const entry = makeActivityEntry(fakeSse, r.round);
+        if (entry) feed.push(entry);
+      }
+
+      return {
+        currentRound: r.round,
+        currentEvent: r.event,
+        agents,
+        metrics: r.metrics,
+        totalCost: r.cumulative_cost_usd,
+        liveFeed: feed,
+      };
+    },
+    [],
+  );
+
+  const detailRef = useRef<ExperimentDetail | null>(null);
+
+  const loadReplay = useCallback(
+    async (experimentId: string) => {
+      try {
+        autoPlayRef.current = false;
+        abortRef.current?.abort();
+        const detail = await getExperiment(experimentId);
+        detailRef.current = detail;
+        const totalRounds = detail.run.per_round.length;
+        const projection = projectRound(detail, totalRounds); // jump to final round
+        const history: HistoryRound[] = detail.run.per_round.map((r) => ({
+          round: r.round,
+          event: r.event,
+          total_cost: r.cumulative_cost_usd,
+          agents: Object.fromEntries(
+            Object.entries(r.agents).map(([aid, snap]) => [
+              aid,
+              {
+                inventory: snap.inventory,
+                current_price: snap.current_price,
+                emotional_state: snap.emotional_state,
+                fill_rate: snap.fill_rate,
+                trust_scores: snap.trust_scores ?? {},
+                decision: snap.current_decision ?? {},
+              },
+            ]),
+          ),
+        }));
+        setState((s) => ({
+          ...s,
+          ...projection,
+          status: "replay",
+          totalRounds,
+          history,
+          replay: {
+            active: true,
+            experimentId,
+            experimentLabel: detail.meta.label,
+            perRound: detail.run.per_round,
+            notes: detail.meta.notes ?? "",
+          },
+          personaVariant: detail.meta.config?.persona_variant ?? "hand-crafted",
+          thinkingAgent: null,
+          error: null,
+        }));
+      } catch (err) {
+        setState((s) => ({ ...s, status: "error", error: String(err) }));
+      }
+    },
+    [projectRound],
+  );
+
+  const setReplayRound = useCallback(
+    (round: number) => {
+      const detail = detailRef.current;
+      if (!detail) return;
+      const projection = projectRound(detail, round);
+      setState((s) => ({ ...s, ...projection }));
+    },
+    [projectRound],
+  );
+
+  const exitReplay = useCallback(async () => {
+    detailRef.current = null;
+    setState((s) => ({
+      ...s,
+      replay: { active: false, experimentId: null, experimentLabel: null, perRound: [], notes: "" },
+    }));
+    try {
+      const data = await getState();
+      const hist = await getHistory();
+      setState((s) => ({
+        ...s,
+        status: (data.status as SimState["status"]) || "idle",
+        currentRound: data.current_round,
+        totalRounds: data.total_rounds,
+        currentEvent: data.current_event,
+        agents: data.agents,
+        metrics: data.metrics,
+        totalCost: data.total_cost,
+        history: hist.rounds,
+        liveFeed: [],
+      }));
+    } catch {
+      // server may be unavailable; replay exit should still clear state
+    }
+  }, []);
+
+  // Discover available experiments + server-side persona variant on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [{ experiments }, cfg] = await Promise.all([
+          listExperiments(),
+          getServerConfig().catch(() => ({ persona_variant: "hand-crafted" })),
+        ]);
+        if (!cancelled) {
+          setState((s) => ({ ...s, experiments, personaVariant: cfg.persona_variant }));
+        }
+      } catch {
+        // Endpoints unavailable — fall through silently; live mode still works.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return {
+    state,
+    reset,
+    step,
+    fetchState,
+    autoPlay,
+    pause,
+    loadReplay,
+    setReplayRound,
+    exitReplay,
+  };
 }

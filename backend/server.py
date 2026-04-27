@@ -11,9 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from agents import get_recent_errors
+from agents import PERSONA_VARIANT, get_recent_errors
 from debug_session import dbg_log
 from model import SupplyChainModel
+from _eval_registry import (
+    list_experiments,
+    read_meta,
+    read_run_data,
+)
 
 # ---------------------------------------------------------------------------
 # Global model instance (in-memory, just like the spec says)
@@ -310,6 +315,52 @@ async def get_history():
 async def get_debug_errors():
     """Return recent LLM errors for diagnostics."""
     return {"errors": get_recent_errors(), "count": len(get_recent_errors())}
+
+
+# ---------------------------------------------------------------------------
+# Experiment registry — read-only endpoints exposing pre-recorded eval runs
+# from evals/<id>/.  Used by the frontend "demo replay" mode so a 14-min
+# live run isn't required to show the simulation in front of an audience.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/experiments")
+async def list_experiments_api():
+    out: list[dict[str, Any]] = []
+    for eid in list_experiments():
+        try:
+            meta = read_meta(eid)
+        except Exception:
+            continue
+        out.append({
+            "id": eid,
+            "label": meta.get("label", ""),
+            "created_at": meta.get("created_at", ""),
+            "config": meta.get("config", {}),
+            "summary": meta.get("summary", {}),
+            "git": meta.get("git", {}),
+            "notes": meta.get("notes", ""),
+        })
+    # Sort newest-first by id (which starts with YYYY-MM-DD).
+    out.sort(key=lambda e: e["id"], reverse=True)
+    return {"experiments": out}
+
+
+@app.get("/api/experiments/{experiment_id}")
+async def get_experiment(experiment_id: str):
+    try:
+        meta = read_meta(experiment_id)
+        run = read_run_data(experiment_id)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, f"experiment {experiment_id!r} not found")
+    return {"meta": meta, "run": run}
+
+
+@app.get("/api/config")
+async def get_config():
+    """Surface server-side runtime config so the UI can display it."""
+    return {
+        "persona_variant": PERSONA_VARIANT,
+    }
 
 
 if __name__ == "__main__":
