@@ -1,4 +1,6 @@
 import type {
+  ExperimentDetail,
+  ExperimentSummary,
   HistoryResponse,
   RoundSummary,
   SimulationState,
@@ -46,6 +48,22 @@ export async function getState(): Promise<SimulationState> {
 
 export async function getHistory(): Promise<HistoryResponse> {
   return fetchJSON<HistoryResponse>("/api/history");
+}
+
+export interface ServerConfig {
+  persona_variant: string;
+}
+
+export async function getServerConfig(): Promise<ServerConfig> {
+  return fetchJSON<ServerConfig>("/api/config");
+}
+
+export async function listExperiments(): Promise<{ experiments: ExperimentSummary[] }> {
+  return fetchJSON<{ experiments: ExperimentSummary[] }>("/api/experiments");
+}
+
+export async function getExperiment(id: string): Promise<ExperimentDetail> {
+  return fetchJSON<ExperimentDetail>(`/api/experiments/${encodeURIComponent(id)}`);
 }
 
 /**

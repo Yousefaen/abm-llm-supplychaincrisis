@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -69,7 +70,12 @@ MODEL_SONNET = "claude-sonnet-4-20250514"
 # ---------------------------------------------------------------------------
 # Personas
 # ---------------------------------------------------------------------------
-PERSONAS: dict[str, str] = {
+# Hand-curated personas — surface persona traits explicitly tied to known
+# 2021-22 chip-crisis behaviors (Toyota's stockpile, Ford's foundry-direct
+# play, etc.).  These are the default.  An auto-generated variant can be
+# selected at process startup via the PERSONA_VARIANT env var; see the
+# loader below.
+_HARDCODED_PERSONAS: dict[str, str] = {
     "TaiwanSemi": (
         "You are the CEO of TaiwanSemi, the world's dominant semiconductor "
         "foundry. You manufacture 70% of all automotive microcontrollers. You are "
@@ -246,6 +252,71 @@ PERSONAS: dict[str, str] = {
         "(4) Cost control: justify premium payments to the Supervisory Board."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Persona variant loader
+# ---------------------------------------------------------------------------
+# PERSONA_VARIANT controls which persona text the sim feeds each agent's
+# system prompt.  Default is "hand-crafted" (the dict above).  Other values
+# load text from ``backend/personas_cache/personas/<agent_id><suffix>.txt``
+# where the suffix encodes the variant — e.g. PERSONA_VARIANT=auto-fy2019
+# reads ``<agent_id>_fy2019.txt``, PERSONA_VARIANT=auto-latest reads
+# ``<agent_id>.txt``.  Agents without a cached file (e.g. Samsung/Bosch/VW
+# under FY2019) fall back to the hand-crafted text so partial coverage
+# doesn't break the run.
+PERSONA_VARIANT = os.environ.get("PERSONA_VARIANT", "hand-crafted").strip()
+
+_PERSONA_CACHE_DIR = Path(__file__).parent / "personas_cache" / "personas"
+
+
+def _persona_filename_suffix(variant: str) -> str:
+    if variant == "auto-latest":
+        return ""
+    if variant.startswith("auto-"):
+        # auto-fy2019 -> "_fy2019"
+        return "_" + variant[len("auto-"):]
+    raise ValueError(f"Unrecognised PERSONA_VARIANT {variant!r}")
+
+
+def _load_personas() -> tuple[dict[str, str], dict[str, str]]:
+    """Return (PERSONAS, source_by_id).
+
+    source_by_id["TaiwanSemi"] is one of "hand-crafted" or "auto-fy2019" so
+    the caller can log which agents are running with auto-personas vs the
+    hardcoded fallback.
+    """
+    if PERSONA_VARIANT == "hand-crafted":
+        return dict(_HARDCODED_PERSONAS), {a: "hand-crafted" for a in _HARDCODED_PERSONAS}
+
+    suffix = _persona_filename_suffix(PERSONA_VARIANT)
+    out: dict[str, str] = {}
+    src: dict[str, str] = {}
+    for aid, hardcoded in _HARDCODED_PERSONAS.items():
+        p = _PERSONA_CACHE_DIR / f"{aid}{suffix}.txt"
+        if p.exists():
+            text = p.read_text(encoding="utf-8").strip()
+            if text:
+                out[aid] = text
+                src[aid] = PERSONA_VARIANT
+                continue
+        out[aid] = hardcoded
+        src[aid] = "hand-crafted"
+    return out, src
+
+
+PERSONAS, _PERSONA_SOURCES = _load_personas()
+
+# Surface the load result once at import time so it shows up in eval runs.
+_auto_loaded = sorted(a for a, s in _PERSONA_SOURCES.items() if s != "hand-crafted")
+_fallback = sorted(a for a, s in _PERSONA_SOURCES.items() if s == "hand-crafted")
+if PERSONA_VARIANT != "hand-crafted":
+    print(
+        f"[personas] variant={PERSONA_VARIANT}  "
+        f"loaded={_auto_loaded or 'none'}  "
+        f"hardcoded-fallback={_fallback}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Agent configuration dataclass

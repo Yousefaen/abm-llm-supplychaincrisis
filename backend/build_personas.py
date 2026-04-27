@@ -1,0 +1,149 @@
+"""Run public-filing fetch + persona generation end-to-end for all wired agents.
+
+Two source types are dispatched by agent_id:
+- EDGAR_SOURCES (SEC filers): TSMC, NXP, Toyota, Ford
+- IR_SOURCES (annual-report PDFs): Samsung, Infineon, Continental, Bosch, VW
+
+Outputs:
+  backend/personas_cache/docs/<agent_id>/<form>.txt    -- cached filing text
+  backend/personas_cache/personas/<agent_id>.txt       -- generated persona
+
+After generation, prints a hand-crafted vs auto-generated comparison so the
+two can be eyeballed side-by-side.
+
+Usage:
+  python build_personas.py --fy 2019                 -- all 9 agents at FY2019
+  python build_personas.py --fy 2019 BoschAuto VW    -- one or two agents
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+import anthropic
+
+from agents import _HARDCODED_PERSONAS as PERSONAS
+from agents import SONNET_INPUT_COST_PER_M, SONNET_OUTPUT_COST_PER_M
+from fetch_filings import fetch_filing, fetch_ir_filing
+from persona_builder import build_persona
+from persona_sources import EDGAR_SOURCES, IR_SOURCES, ROLE_CONTEXT
+
+OUT_DIR = Path(__file__).parent / "personas_cache" / "personas"
+
+
+def fetch_source_for_agent(agent_id: str, fiscal_year: int | None) -> Path:
+    """Dispatch fetch on source type. Returns path to extracted text file."""
+    if agent_id in EDGAR_SOURCES:
+        src = EDGAR_SOURCES[agent_id]
+        return fetch_filing(agent_id, src["cik"], src["form"], fiscal_year)
+    if agent_id in IR_SOURCES:
+        if fiscal_year != 2019:
+            raise ValueError(
+                f"IR_SOURCES currently only wires up FY2019 for {agent_id}; "
+                f"requested {fiscal_year}"
+            )
+        src = IR_SOURCES[agent_id]
+        return fetch_ir_filing(agent_id, src["fy2019_url"], fiscal_year)
+    raise KeyError(f"no source wired for {agent_id} (not in EDGAR_SOURCES or IR_SOURCES)")
+
+
+def all_wired_agents() -> list[str]:
+    return list(EDGAR_SOURCES) + [a for a in IR_SOURCES if a not in EDGAR_SOURCES]
+
+
+def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    args = list(sys.argv[1:])
+    fiscal_year: int | None = None
+    if "--fy" in args:
+        i = args.index("--fy")
+        fiscal_year = int(args.pop(i + 1))
+        args.pop(i)
+    targets = args or all_wired_agents()
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    client = anthropic.Anthropic()
+    total_in = 0
+    total_out = 0
+    t0 = time.time()
+
+    fy_label = f"FY{fiscal_year}" if fiscal_year else "latest"
+    print(f"Generating {fy_label} personas for {len(targets)} agent(s): {', '.join(targets)}\n")
+
+    for agent_id in targets:
+        if agent_id not in EDGAR_SOURCES and agent_id not in IR_SOURCES:
+            print(f"  [{agent_id}] no source wired; skipping")
+            continue
+
+        ctx = ROLE_CONTEXT[agent_id]
+
+        # 1. Fetch the source (EDGAR text or IR PDF -> extracted text)
+        try:
+            doc_path = fetch_source_for_agent(agent_id, fiscal_year)
+        except Exception as exc:
+            print(f"  [{agent_id}] fetch failed: {type(exc).__name__}: {exc}")
+            continue
+
+        # 2. Generate persona — cache partitioned by fiscal year so 2019 and
+        #    latest can coexist for side-by-side review.
+        suffix = f"_fy{fiscal_year}" if fiscal_year else ""
+        out_file = OUT_DIR / f"{agent_id}{suffix}.txt"
+        if out_file.exists():
+            print(f"  [{agent_id}] persona cached -> {out_file.name}; delete to regenerate\n")
+            continue
+
+        print(f"  [{agent_id}] generating persona via Sonnet...")
+        persona, usage = build_persona(
+            agent_id=agent_id,
+            role=ctx["role"],
+            company=ctx["company"],
+            upstream_desc=ctx["upstream_desc"],
+            downstream_desc=ctx["downstream_desc"],
+            doc_path=doc_path,
+            client=client,
+        )
+        out_file.write_text(persona, encoding="utf-8")
+        total_in += usage["input_tokens"]
+        total_out += usage["output_tokens"]
+        print(
+            f"  [{agent_id}] saved {len(persona)} chars  "
+            f"(in={usage['input_tokens']} out={usage['output_tokens']} tokens)\n"
+        )
+
+    cost = (
+        total_in * SONNET_INPUT_COST_PER_M / 1_000_000
+        + total_out * SONNET_OUTPUT_COST_PER_M / 1_000_000
+    )
+    elapsed = time.time() - t0
+    print(
+        f"=== generation complete: {elapsed:.1f}s, "
+        f"{total_in} in / {total_out} out tokens, ${cost:.4f} ===\n"
+    )
+
+    # Side-by-side comparison
+    suffix = f"_fy{fiscal_year}" if fiscal_year else ""
+    print("\n" + "=" * 78)
+    if fiscal_year:
+        print(f"HAND-CRAFTED  vs  FY{fiscal_year}-AUTO  (eyeball comparison)")
+    else:
+        print("HAND-CRAFTED  vs  AUTO  (eyeball comparison)")
+    print("=" * 78)
+    for agent_id in targets:
+        fy_file = OUT_DIR / f"{agent_id}{suffix}.txt"
+        if not fy_file.exists():
+            continue
+        print(f"\n----- {agent_id} -----")
+        print(f"\n>>> HAND-CRAFTED ({len(PERSONAS[agent_id])} chars):\n")
+        print(PERSONAS[agent_id])
+        label = f"FY{fiscal_year}-AUTO" if fiscal_year else "AUTO"
+        print(f"\n>>> {label} ({fy_file.stat().st_size} chars):\n")
+        print(fy_file.read_text(encoding="utf-8"))
+        print()
+
+
+if __name__ == "__main__":
+    main()

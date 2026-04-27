@@ -10,19 +10,43 @@ import InspectPanel from "./components/InspectPanel";
 import ActivityFeed from "./components/ActivityFeed";
 
 export default function Home() {
-  const { state, reset, step, fetchState, autoPlay, pause } = useSimulation();
+  const {
+    state,
+    reset,
+    step,
+    fetchState,
+    autoPlay,
+    pause,
+    loadReplay,
+    setReplayRound,
+    exitReplay,
+  } = useSimulation();
 
   // Inspect selection. When set, we are in Inspect mode; otherwise Live.
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
 
   // Scrubbing: when the user clicks a past round, we "freeze" the focus
-  // to that round. Phase 3 skeleton displays the focus indicator; actual
-  // historical-state rendering comes with Phase 4 history wiring.
+  // to that round.  In replay mode this also drives state.agents back to
+  // the historical snapshot so the graph + inspect panel reflect the
+  // chosen round.
   const [focusedRound, setFocusedRound] = useState<number | null>(null);
 
   useEffect(() => {
+    if (state.replay.active) return; // Don't poll live state during replay
     fetchState();
-  }, [fetchState]);
+  }, [fetchState, state.replay.active]);
+
+  // In replay mode, route scrubbing to setReplayRound so the agent state
+  // updates with the focused round.
+  const handleSelectRound = useCallback(
+    (round: number | null) => {
+      setFocusedRound(round);
+      if (state.replay.active && round !== null) {
+        setReplayRound(round);
+      }
+    },
+    [state.replay.active, setReplayRound],
+  );
 
   // RTS-style keyboard: space to toggle play/pause, Esc to return to live,
   // arrow keys to step. We guard against typing targets so the shortcuts
@@ -81,6 +105,8 @@ export default function Home() {
         onAutoPlay={autoPlay}
         onPause={pause}
         onReset={reset}
+        onLoadReplay={loadReplay}
+        onExitReplay={exitReplay}
       />
 
       {/* Hero area — Live canvas + right-side activity feed, or Inspect
@@ -125,7 +151,7 @@ export default function Home() {
         totalRounds={state.totalRounds}
         history={state.history}
         focusedRound={focusedRound}
-        onSelectRound={setFocusedRound}
+        onSelectRound={handleSelectRound}
       />
     </main>
   );

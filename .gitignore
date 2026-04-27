@@ -48,6 +48,9 @@ __pycache__/
 # debug logs
 debug-*.log
 
+# auto-persona pipeline artifacts (filings + generated personas)
+backend/personas_cache/
+
 # legacy eval scratch JSONs (pre-registry); registry lives under evals/<id>/
 backend/_eval_run_*.json
 

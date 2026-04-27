@@ -49,7 +49,7 @@ from _eval_registry import (
 
 SEED = 42
 TEMP = 1.0
-TOTAL_ROUNDS = 10
+DEFAULT_TOTAL_ROUNDS = 10
 
 # CLI parsing
 _args = list(sys.argv[1:])
@@ -65,6 +65,7 @@ def _pop_flag(name: str, default: str | None = None) -> str | None:
 label = _pop_flag("--label", "run") or "run"
 notes = _pop_flag("--notes", "") or ""
 persona_variant = _pop_flag("--persona-variant", "hand-crafted") or "hand-crafted"
+TOTAL_ROUNDS = int(_pop_flag("--rounds", str(DEFAULT_TOTAL_ROUNDS)))
 
 eid = make_experiment_id(label)
 exp_dir = experiment_dir(eid)

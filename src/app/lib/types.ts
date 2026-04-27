@@ -281,3 +281,88 @@ export const EMOTIONAL_COLORS: Record<EmotionalState, string> = {
   panicked: "#A03A28",      // deep red
   vindictive: "#6F3A3A",    // oxblood
 };
+
+// ---------------------------------------------------------------------------
+// Persona provenance — surfaces the source of each agent's persona text.
+// Renders as a badge on agent cards and a line in the inspect panel so the
+// audience can trace any persona back to a verifiable public document.
+// Keep this in sync with backend/persona_sources.py.
+// ---------------------------------------------------------------------------
+
+export interface PersonaSource {
+  company: string;       // formal company name in the filing
+  document: string;      // "20-F" / "10-K" / "Annual Report"
+  fiscalYear: number;    // 2019 for the current baseline
+  origin: "SEC" | "IR";  // SEC EDGAR vs investor-relations website
+}
+
+export const PERSONA_SOURCES: Record<AgentId, PersonaSource> = {
+  TaiwanSemi:   { company: "TSMC", document: "20-F", fiscalYear: 2019, origin: "SEC" },
+  KoreaSilicon: { company: "Samsung Electronics", document: "Business Report", fiscalYear: 2019, origin: "IR" },
+  EuroChip:     { company: "Infineon Technologies", document: "Annual Report", fiscalYear: 2019, origin: "IR" },
+  AmeriSemi:    { company: "NXP Semiconductors", document: "10-K", fiscalYear: 2019, origin: "SEC" },
+  BoschAuto:    { company: "Robert Bosch GmbH", document: "Annual Report", fiscalYear: 2019, origin: "IR" },
+  ContiParts:   { company: "Continental AG", document: "Annual Report", fiscalYear: 2019, origin: "IR" },
+  ToyotaMotors: { company: "Toyota Motor Corporation", document: "20-F", fiscalYear: 2019, origin: "SEC" },
+  FordAuto:     { company: "Ford Motor Company", document: "10-K", fiscalYear: 2019, origin: "SEC" },
+  VolkswagenAG: { company: "Volkswagen AG", document: "Annual Report", fiscalYear: 2019, origin: "IR" },
+};
+
+// ---------------------------------------------------------------------------
+// Experiment registry — types for the GET /api/experiments endpoints
+// ---------------------------------------------------------------------------
+
+export interface ExperimentSummary {
+  id: string;
+  label: string;
+  created_at: string;
+  config: {
+    seed?: number;
+    temperature?: number;
+    total_rounds?: number;
+    phase_concurrency?: number;
+    scenario?: string;
+    persona_variant?: string;
+  };
+  summary: {
+    wall_clock_sec?: number;
+    total_cost_usd?: number;
+    rounds_completed?: number;
+    error_count?: number;
+  };
+  git: {
+    branch?: string;
+    commit_short?: string;
+    dirty?: boolean;
+  };
+  notes: string;
+}
+
+export interface ExperimentRunRound {
+  round: number;
+  event: string;
+  elapsed_sec: number;
+  round_cost_usd: number;
+  cumulative_cost_usd: number;
+  metrics: RoundMetrics | null;
+  agents: Record<string, Partial<AgentState> & {
+    tier: Tier;
+    inventory: number;
+    current_price: number;
+    fill_rate: number;
+    emotional_state: EmotionalState;
+    profit: number;
+    current_decision: AgentDecision | null;
+  }>;
+  events: DecisionEvent[];
+  status: string;
+  error_count: number;
+}
+
+export interface ExperimentDetail {
+  meta: ExperimentSummary;
+  run: {
+    meta: Record<string, unknown>;
+    per_round: ExperimentRunRound[];
+  };
+}

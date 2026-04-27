@@ -1,0 +1,25 @@
+{
+  "experiment_id": "2026-04-26_personas-fy2019-full",
+  "label": "personas-fy2019-full",
+  "created_at": "2026-04-26T14:27:51-04:00",
+  "git": {
+    "branch": "feat/auto-persona-edgar",
+    "commit_short": "b3cdde2",
+    "dirty": false
+  },
+  "config": {
+    "seed": 42,
+    "temperature": 1.0,
+    "total_rounds": 10,
+    "phase_concurrency": 5,
+    "scenario": "The Great Semiconductor Shortage",
+    "persona_variant": "auto-fy2019"
+  },
+  "summary": {
+    "wall_clock_sec": 844.13747382164,
+    "total_cost_usd": 2.2875646000000005,
+    "rounds_completed": 10,
+    "error_count": 2
+  },
+  "notes": "Full-coverage auto-FY2019 personas: all 9 agents now load from personas_cache (4 from EDGAR + 5 from IR-website PDFs). Pair with 2026-04-22_capacity-rebalance to isolate persona-source contribution under complete coverage. Compare also with 2026-04-26_personas-fy2019 (partial 4/9 coverage) to see what additional cleanup the IR-sourced personas contribute."
+}
