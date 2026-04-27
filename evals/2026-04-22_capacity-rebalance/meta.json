@@ -1,0 +1,25 @@
+{
+  "experiment_id": "2026-04-22_capacity-rebalance",
+  "label": "capacity-rebalance",
+  "created_at": "2026-04-25T22:26:57-04:00",
+  "git": {
+    "branch": "main",
+    "commit_short": "a853e9d",
+    "dirty": false
+  },
+  "config": {
+    "seed": 42,
+    "temperature": 1.0,
+    "total_rounds": 10,
+    "phase_concurrency": 5,
+    "scenario": "The Great Semiconductor Shortage",
+    "persona_variant": "hand-crafted"
+  },
+  "summary": {
+    "wall_clock_sec": 796.3460216522217,
+    "total_cost_usd": 2.193641199999998,
+    "rounds_completed": 10,
+    "error_count": 2
+  },
+  "notes": "After rebalancing AGENT_SPECS capacities to approximate real auto-semi ratios. Pair with 2026-04-22_scenario-rewrite."
+}
