@@ -47,7 +47,7 @@ from _eval_registry import (
     write_report,
 )
 
-SEED = 42
+DEFAULT_SEED = 42
 TEMP = 1.0
 DEFAULT_TOTAL_ROUNDS = 10
 
@@ -66,6 +66,7 @@ label = _pop_flag("--label", "run") or "run"
 notes = _pop_flag("--notes", "") or ""
 persona_variant = _pop_flag("--persona-variant", "hand-crafted") or "hand-crafted"
 TOTAL_ROUNDS = int(_pop_flag("--rounds", str(DEFAULT_TOTAL_ROUNDS)))
+SEED = int(_pop_flag("--seed", str(DEFAULT_SEED)))
 
 eid = make_experiment_id(label)
 exp_dir = experiment_dir(eid)

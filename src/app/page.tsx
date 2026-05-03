@@ -8,6 +8,7 @@ import SupplyChainGraph from "./components/SupplyChainGraph";
 import Ticker from "./components/Ticker";
 import InspectPanel from "./components/InspectPanel";
 import ActivityFeed from "./components/ActivityFeed";
+import FindingsOverlay from "./components/FindingsOverlay";
 
 export default function Home() {
   const {
@@ -134,6 +135,7 @@ export default function Home() {
                 thinkingAgent={state.thinkingAgent}
                 agents={state.agents}
               />
+              <FindingsOverlay state={state} />
             </div>
           )}
         </div>

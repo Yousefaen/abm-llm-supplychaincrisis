@@ -1,0 +1,25 @@
+{
+  "experiment_id": "2026-05-03_personas-fy2019-seed43",
+  "label": "personas-fy2019-seed43",
+  "created_at": "2026-05-03T14:29:06-04:00",
+  "git": {
+    "branch": "feat/pmi-and-findings",
+    "commit_short": "08ae436",
+    "dirty": true
+  },
+  "config": {
+    "seed": 43,
+    "temperature": 1.0,
+    "total_rounds": 10,
+    "phase_concurrency": 5,
+    "scenario": "The Great Semiconductor Shortage",
+    "persona_variant": "auto-fy2019"
+  },
+  "summary": {
+    "wall_clock_sec": 776.2129583358765,
+    "total_cost_usd": 2.2294919999999996,
+    "rounds_completed": 10,
+    "error_count": 5
+  },
+  "notes": "Seed 43 (different from 42 used in 2026-04-26_personas-fy2019-full). Same persona variant + scenario, different RNG seed. Used to test bullwhip robustness across seeds."
+}

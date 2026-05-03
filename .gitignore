@@ -54,5 +54,8 @@ backend/personas_cache/
 # legacy eval scratch JSONs (pre-registry); registry lives under evals/<id>/
 backend/_eval_run_*.json
 
+# external validation data — user-downloaded public CSVs not bundled in repo
+backend/data/*.csv
+
 # local Claude Code settings (per-machine, not shared)
 .claude/
